@@ -88,6 +88,24 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "grep_workspace": {
+        "type": "function",
+        "function": {
+            "name": "grep_workspace",
+            "description": "在工作区文本文件中按正则搜索，返回 path/line/text（只读）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "正则表达式"},
+                    "path": {"type": "string", "description": "相对工作区的子目录或文件"},
+                    "glob": {"type": "string", "description": "文件名过滤，如 *.md"},
+                    "ignore_case": {"type": "boolean"},
+                    "max_results": {"type": "integer"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
     "get_subagent_status": {
         "type": "function",
         "function": {
@@ -325,6 +343,16 @@ async def _dispatch_inner(
                 str(args.get("path", "")),
                 workspace_root=workspace_root, project_id=project_id,
             )
+        if tool == "grep_workspace":
+            return _delegate("grep_workspace", {
+                "pattern": str(args.get("pattern", "")),
+                "path": str(args.get("path", ".") or "."),
+                "glob": str(args.get("glob", "") or ""),
+                "ignore_case": bool(args.get("ignore_case", False)),
+                "max_results": int(args.get("max_results") or 50),
+                "workspace_root": workspace_root,
+                "project_id": project_id,
+            })
         if tool == "write_file":
             return _write_file(
                 str(args.get("path", "")),

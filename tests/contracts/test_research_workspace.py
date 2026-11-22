@@ -103,3 +103,18 @@ def test_all_tool_failures_mark_worker_failed(monkeypatch) -> None:
     assert result["status"] == "failed"
     assert result["failure"]["category"] == "tool_failed"
     assert find_worker(result["worker_id"]).status == "failed"
+
+
+def test_worker_grep_workspace(tmp_path, monkeypatch) -> None:
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "a.md").write_text("alpha\n目标证据\n", encoding="utf-8")
+    import clipwright.security as security
+
+    monkeypatch.setattr(security, "allowed_media_roots", lambda: [tmp_path])
+    ex = build_executor(
+        "p_grep", "sa", allowed=("grep_workspace",),
+        workspace_root=str(tmp_path), project_id="p",
+    )
+    out = asyncio.run(ex("grep_workspace", {"pattern": "目标证据", "path": "reports"}))
+    assert out.get("count") == 1
+    assert out["items"][0]["line"] == 2

@@ -32,6 +32,7 @@ SUPERVISOR_TOOLS: frozenset[str] = frozenset({
     "write_file",
     "web_search",
     "web_fetch",
+    "grep_workspace",
 })
 
 #: 执行类工具：授予即代表该 worker 有「动手」能力 → 必须过两级审核门

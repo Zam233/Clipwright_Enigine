@@ -8,6 +8,7 @@ import pytest
 
 from clipwright.tool.workspace_search import (
     GlobWorkspaceTool,
+    GrepWorkspaceTool,
     ReadFileRangeTool,
     WorkspaceTreeTool,
 )
@@ -60,3 +61,13 @@ def test_workspace_tools_reject_outside_path(ws) -> None:
     ))
     assert str(out.status) == "error"
     assert "允许" in out.error
+
+
+def test_grep_workspace(ws) -> None:
+    (ws / "reports" / "b.md").write_text("alpha\nbeta 目标词\ngamma", encoding="utf-8")
+    out = asyncio.run(GrepWorkspaceTool().execute(
+        pattern="目标词", path="reports", workspace_root=str(ws),
+    ))
+    assert str(out.status) == "success"
+    assert out.output["count"] == 1
+    assert out.output["items"][0]["line"] == 2

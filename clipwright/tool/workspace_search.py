@@ -223,3 +223,79 @@ class ReadFileRangeTool(BaseTool):
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+
+class GrepWorkspaceTool(BaseTool):
+    """在工作区文本文件中按正则搜索，返回行级命中。"""
+
+    name = "grep_workspace"
+    permission_tier = "read"
+    agent_callable = True
+    description = "在工作区文本文件中按正则搜索（可限定子目录/glob），返回 path/line/text，最多 100 条。"
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "正则表达式"},
+            "path": {"type": "string", "default": ".", "description": "相对工作区的子目录或文件"},
+            "glob": {"type": "string", "description": "可选：文件名过滤，如 *.md"},
+            "ignore_case": {"type": "boolean", "default": False},
+            "max_results": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+            "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
+            "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
+        },
+        "required": ["pattern"],
+    }
+
+    async def execute(
+        self, pattern: str = "", path: str = ".", glob: str = "",
+        ignore_case: bool = False, max_results: int = 50,
+        workspace_root: str = "", project_id: str = "", **kwargs: Any,
+    ) -> ToolExecResult:
+        root, err = _checked_root(workspace_root, project_id)
+        if root is None:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=err)
+        import re
+
+        try:
+            rx = re.compile(str(pattern or ""), re.IGNORECASE if ignore_case else 0)
+        except re.error as exc:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=f"正则非法: {exc}")
+        base, perr = _guarded(path or ".", root)
+        if perr:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=perr)
+        if base is None:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="定位工作区路径失败")
+        cap = max(1, min(100, int(max_results or 50)))
+        matches: list[dict[str, Any]] = []
+        files = [base] if base.is_file() else [
+            p for p in base.rglob("*")
+            if p.is_file() and (not glob or fnmatch.fnmatch(p.name, glob))
+        ]
+        for file in files:
+            if len(matches) >= cap:
+                break
+            if any(part in _SKIP_DIRS for part in file.parts):
+                continue
+            if file.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mp3", ".wav"}:
+                continue
+            try:
+                if file.stat().st_size > 2_000_000:
+                    continue
+                text = file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if rx.search(line):
+                    matches.append({
+                        "path": file.relative_to(root).as_posix(),
+                        "line": lineno, "text": line[:500],
+                    })
+                    if len(matches) >= cap:
+                        break
+        return ToolExecResult(
+            status=ToolStatus.SUCCESS, tool_name=self.name,
+            output={"pattern": pattern, "count": len(matches), "items": matches,
+                    "truncated": len(matches) >= cap},
+        )

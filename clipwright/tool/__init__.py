@@ -72,6 +72,7 @@ from clipwright.tool.timeline_insert_image import (
 )
 from clipwright.tool.workspace_search import (
     GlobWorkspaceTool,
+    GrepWorkspaceTool,
     ReadFileRangeTool,
     WorkspaceTreeTool,
 )
@@ -97,6 +98,7 @@ def register_builtin_tools() -> None:
         GlobWorkspaceTool(),
         WorkspaceTreeTool(),
         ReadFileRangeTool(),
+        GrepWorkspaceTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
         VideoDownloadTool(),
