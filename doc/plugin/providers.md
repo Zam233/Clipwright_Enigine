@@ -32,11 +32,6 @@ requests 等长同序；`capabilities.supports_batch=True` 表示声明支持。
 Provider **只做传输与格式转换**；不要在插件里写全局重试、JSON 修复、工具循环，这些在核心
 （`services/llm.py`、`services/voice.py`）里，重复实现会与核心策略打架。
 
-### 插件 id 迁移
-
-`image_providers` 已重命名为 `image_generate`。`PluginLoader.get_plugin_data_dir()` 在首次
-访问新 id 时会把旧 `PluginData/plugins/image_providers/` 复制到 `.../image_generate/`
-（保留旧目录，便于回滚）；旧 `.enabled` 状态与 `config.yaml` 一并迁移。
 
 ## 2. LLM 能力协商
 

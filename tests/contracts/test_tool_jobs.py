@@ -45,3 +45,13 @@ def test_heartbeat_and_cancel() -> None:
 
     asyncio.run(_run())
     assert tool_jobs.is_cancelled(job.job_id)
+
+
+def test_cancel_api_endpoint() -> None:
+    import asyncio
+    from clipwright.api import tool as tool_api
+
+    tool_jobs.clear()
+    job = tool_jobs.create("x", 2)
+    out = asyncio.run(tool_api.cancel_tool_job(job.job_id, reason="test"))
+    assert out["status"] == "cancelled"

@@ -250,6 +250,33 @@ async def test_image_generate_batch_partial_failure(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_image_generate_batch_insert_calls_timeline(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from plugins.image_generate import tool as tool_mod
+
+    class FakeService:
+        def __init__(self, _root):
+            self.root = _root
+
+        async def generate_many(self, *, prompts, **_kwargs):
+            return [SimpleNamespace(ok=True, rel_path=f"materials/image/{p}.png",
+                                    as_dict=lambda p=p: {"ok": True,
+                                                         "rel_path": f"materials/image/{p}.png"})
+                    for p in prompts]
+
+    monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
+    insert = AsyncMock(return_value=SimpleNamespace(output={"items": [{"status": "ok"}]}))
+    with patch("clipwright.tool.registry.ToolRegistry.execute", insert):
+        out = await tool_mod.ImageGenerateBatchTool().execute(
+            prompts=["a"], workspace_root=str(tmp_path), task_id="t1", insert=True,
+        )
+    assert insert.await_count == 1
+    assert insert.await_args.args[0] == "timeline_insert_images"
+    assert "insert" in out.output
+
+
+@pytest.mark.asyncio
 async def test_image_generate_batch_async_mode(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from plugins.image_generate import tool as tool_mod

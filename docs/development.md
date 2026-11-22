@@ -124,7 +124,7 @@ PluginData/plugins/{plugin_id}/config.yaml
 - 内置插件：
   | 插件 | provider id | 说明 |
   |------|-------------|------|
-  | `plugins/image_providers` | `openai_compatible` | 通用 OpenAI 兼容：`POST {base_url}/images/generations`，`b64_json`/`url` 双响应 |
+  | `plugins/image_generate` | `openai_compatible` | 通用 OpenAI 兼容：`POST {base_url}/images/generations`，`b64_json`/`url` 双响应 |
   | `plugins/image_gpt_images` | `openai_gpt_image` | `gpt-image-1` 专有：固定 size 档位、quality 参数 |
 - 新增厂商 = 新插件实现 `ImageProvider`，**不要**在 Engine 里加厂商分支。
 - 生成工具 `image_generate`（工作区落盘/幂等账本/素材可见性）与 `timeline_insert_image`

@@ -486,7 +486,6 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 | WP | 状态 | 提交 | 备注 |
 |---|---|---|---|
 | WP2 image_generate 插件化 | 完成 | `ac0bc00` | provider + image_generate/batch 工具迁入插件；Engine 删除该工具 |
-| WP2 插件数据迁移 | 完成 | `a46f1ac` | `image_providers` 旧 PluginData 自动复制到 `image_generate` |
 | WP1 vision_llm_batch | 完成（工具+material 接入） | `e86b576` 及前序 | 批量、缓存、单项失败；material top 候选使用 |
 | WP5 工作区查询 | 完成 | `83f32ab`、`2b9bb0a` | glob/tree/grep/range + artifact_search/summary |
 | WP3 video_trim_batch | 工具完成，EditAgent 待接入 | `433ac04` | 批量并发、逐项失败 |
@@ -509,7 +508,6 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 
 - 通用 batch job 已有 REST 查询、逐项进度、取消感知与任务事件流；心跳仍由单次工具调用生命周期隐式承担；
 - quality 门默认开启（`agent_quality_gate=True`），单测 fixture 默认关闭；
-- `PluginData/plugins/image_providers` 首次访问新 id 时自动复制到 `image_generate`。
 
 结论：工具工效改造的插件边界、批量工具、工作区查询、research、预检、quality、复盘与 job 基础设施已落地；
 edit/animation 的批量消费与 image provider 原生 batch 仍需后续实现，**当前不宣称全部完成**。
