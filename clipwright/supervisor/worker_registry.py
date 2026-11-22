@@ -55,6 +55,10 @@ class WorkerSpec:
     budget_usd: Optional[float] = None
     max_turns: int = 5
     kind: str = "ephemeral"
+    #: 当前任务工作区（子代理的 read_file/list_dir/write_file 按它解析相对路径）
+    workspace_root: str = ""
+    #: 工作区项目 id（工作区根缺失时由工具按 id 反查）
+    project_id: str = ""
 
     @property
     def needs_exec_review(self) -> bool:

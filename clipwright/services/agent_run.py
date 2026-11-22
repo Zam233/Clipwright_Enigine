@@ -605,7 +605,18 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
                      "blocking_point": str(exc)[:200], "evidence": []},
         )
 
-    ctx = SimpleNamespace(pipeline_id=trace_id or getattr(task, "id", ""), extra_params={})
+    _task_extra = dict(getattr(getattr(task, "request", None), "extra", {}) or {})
+    ctx = SimpleNamespace(
+        pipeline_id=trace_id or getattr(task, "id", ""),
+        # research worker 也走同一套工作区解析；丢了这个 root，read_file/list_dir
+        # 只能按 CWD 解析，最终被 assert_allowed_path 拒绝（2026-11-22 实机）。
+        extra_params={
+            "workspace_root": str(_task_extra.get("workspace_root") or ""),
+            "project_id": str(
+                _task_extra.get("workspace_project_id") or _task_extra.get("project_id") or ""
+            ),
+        },
+    )
     try:
         res = await spawn_subagent(
             ctx,
@@ -643,7 +654,8 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
                      "blocking_point": "等待人工审核", "evidence": [],
                      "review": review},
         )
-    status = {"done": "ok", "failed": "failed"}.get(raw, "failed")
+    failure = res.get("failure")
+    status = "failed" if failure else {"done": "ok", "failed": "failed"}.get(raw, "failed")
     return _ra.build(
         run_id=run_id, kind="research",
         task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
@@ -655,7 +667,7 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
         tokens=int(res.get("tokens") or 0),
         cost_usd=res.get("cost_usd"), cost_unknown=res.get("cost_usd") is None,
         duration_ms=int(res.get("duration_ms") or 0),
-        failure=res.get("failure"),
+        failure=failure,
         error=str(res.get("error") or ""),
     )
 
