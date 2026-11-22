@@ -39,13 +39,14 @@ class CandidateQueryTool(BaseTool):
             "kind": {"type": "string"},
             "query": {"type": "string"},
             "limit": {"type": "integer", "default": 50},
+            "cursor": {"type": "integer", "default": 0},
         },
     }
 
     async def execute(self, *, candidates: list[dict[str, Any]] | None = None,
                       task_id: str = "", scene_index: int = -1,
                       kind: str = "", query: str = "", limit: int = 50,
-                      **kwargs: Any) -> ToolExecResult:
+                      cursor: int = 0, **kwargs: Any) -> ToolExecResult:
         rows = [c for c in (candidates if candidates is not None else _board_clips(task_id))
                 if isinstance(c, dict)]
         if scene_index >= 0:
@@ -59,9 +60,13 @@ class CandidateQueryTool(BaseTool):
                     or q in str(c.get("description") or "").lower()
                     or q in str(c.get("url") or "").lower()]
         cap = max(1, min(200, int(limit or 50)))
+        start = max(0, int(cursor or 0))
+        page = rows[start:start + cap]
+        next_cursor = start + cap if start + cap < len(rows) else 0
         return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
-                              output={"items": rows[:cap], "total": len(rows),
-                                      "truncated": len(rows) > cap})
+                              output={"items": page, "total": len(rows),
+                                      "next_cursor": next_cursor,
+                                      "truncated": next_cursor != 0})
 
 
 class CandidateRerankTool(BaseTool):
