@@ -124,7 +124,9 @@ def test_tool_schemas_respects_whitelist_and_availability() -> None:
     agent.tool_whitelist = ("frame_validator", "does_not_exist", "test_unconfigured_tool")
     ToolRegistry.register(_UnconfiguredTool(), plugin_id="test_plugin")
     names = [s["function"]["name"] for s in agent.tool_schemas()]
-    assert names == ["frame_validator"]
+    # 所有 Agent 都注入读图工具（PRD kernel-exec / tool ergonomics）
+    assert names[:1] == ["frame_validator"]
+    assert {"read_image", "read_image_batch"} <= set(names)
 
 
 def test_capability_report_lists_decision() -> None:

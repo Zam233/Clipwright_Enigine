@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
     # on     = Kernel 执行（创作唯一入口；老 6 阶段管线已删除）
     agent_mode: Literal["off", "shadow", "on"] = "off"
+    # --- Kernel Exec（PRD kernel-exec-approval）---
+    kernel_exec_enabled: bool = False
+    exec_require_approval: bool = True
+    exec_auto_low: bool = True
+    exec_shell_fallback: bool = True
+    exec_history_limit: int = 20
+    exec_approval_ttl_sec: float = 600.0
     # 老 6 阶段管线执行开关——**已失效**（M3 删除执行引擎后，/run-async 与 retry
     # 永久 410，与此开关无关）。保留字段只为兼容旧配置文件的解析，不要再用它。
     pipeline_enabled: bool = False

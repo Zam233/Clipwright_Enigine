@@ -68,7 +68,7 @@ def test_event_types_are_unique_and_non_empty() -> None:
     assert len(EVENT_TYPES) == len(set(EVENT_TYPES))
     assert all(EVENT_TYPES)
     # 新增事件类型必须同步前端（本测试就是那个闸）
-    assert len(EVENT_TYPES) == 32, (
+    assert len(EVENT_TYPES) == 35, (
         f"EVENT_TYPES 数量变化（{len(EVENT_TYPES)}）——请同步更新前端 "
         "src/features/task/eventSchema.ts 的 EVENT_TYPE_KEYS 与本断言"
     )

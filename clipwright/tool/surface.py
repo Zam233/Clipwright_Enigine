@@ -44,6 +44,57 @@ AGENT_TOOLS: tuple[str, ...] = (DELEGATE_AGENT, RESEARCH_AGENT,
                                 GET_AGENT_RUN, LIST_AGENT_RUNS, CANCEL_AGENT_RUN,
                                 ACKNOWLEDGE_DEGRADATION, ASK_USER)
 
+#: Kernel Exec 能力：不注册为普通 BaseTool，只在主 Agent 面上作为 dangerous schema。
+EXEC_TOOLS: tuple[str, ...] = ("run_shell", "run_python")
+
+#: Exec schema（参数必须和 gateway 契约一致）
+_EXEC_SCHEMAS: dict[str, dict[str, Any]] = {
+    "run_shell": {
+        "description": "请求执行一条 shell 命令（pwsh/bash）；必须由用户授权后才会执行。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "命令原文"},
+                "cwd": {"type": "string", "description": "任务工作区内的相对/绝对目录"},
+                "timeout_sec": {"type": "number", "default": 60},
+                "purpose": {"type": "string", "description": "为什么要执行这一步"},
+            },
+            "required": ["command"],
+        },
+    },
+    "run_python": {
+        "description": "请求执行一段 Python 脚本；必须由用户授权后才会执行。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "脚本正文"},
+                "cwd": {"type": "string", "description": "任务工作区内的相对/绝对目录"},
+                "timeout_sec": {"type": "number", "default": 60},
+                "purpose": {"type": "string", "description": "为什么要执行这一步"},
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+
+def exec_entries() -> list[SurfaceEntry]:
+    from clipwright.config import settings
+    if not bool(getattr(settings, "kernel_exec_enabled", False)):
+        return []
+    out: list[SurfaceEntry] = []
+    for name, spec in _EXEC_SCHEMAS.items():
+        out.append(SurfaceEntry(
+            name=name, tier="dangerous",
+            description=str(spec["description"]), available=True,
+            idempotent=False, dry_run=False,
+            schema={"type": "function", "function": {
+                "name": name, "description": str(spec["description"]),
+                "parameters": spec["parameters"],
+            }},
+        ))
+    return out
+
 _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
     DELEGATE_AGENT: {
         "description": (
@@ -502,6 +553,8 @@ def schemas(*, tiers: Iterable[str] = SURFACE_TIERS, available_only: bool = True
         if closeout and entry.tier != "read" and entry.name not in extra:
             continue
         out.append(entry.schema)
+    if not closeout:
+        out.extend(e.schema for e in exec_entries())
     return out
 
 
@@ -933,6 +986,17 @@ async def execute(
     from clipwright.tool.registry import ToolRegistry
 
     payload = dict(args or {})
+    if name in EXEC_TOOLS:
+        from clipwright.services import kernel_exec
+
+        if task is None and pipeline_id:
+            try:
+                from clipwright.services.agent_kernel import AgentKernel
+
+                task = AgentKernel().get(pipeline_id)
+            except Exception:  # noqa: BLE001
+                task = None
+        return await kernel_exec.run(task, name, payload)
     # 工作区上下文注入（closeout B11 发现的真 bug）：
     # 工具面是唯一入口，但 Task 的工作区信息只存在 `request.extra` 里，
     # 模型并不知道 `workspace_root`/`project_id` 该填什么 → list_artifacts /

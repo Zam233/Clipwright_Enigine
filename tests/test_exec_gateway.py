@@ -153,11 +153,15 @@ def test_reject_records_rejection(monkeypatch):
     assert gw.records("pl_x")[-1]["rejected"]["reason"] == "用户拒绝授权"
 
 
-def test_auto_mode_only_waives_med(monkeypatch):
-    _assess(monkeypatch, risk="med")
+def test_auto_low_only_waives_low(monkeypatch):
     gw.set_auto_mode("pl_x", True)
-    med = asyncio.run(gw.run_command("pl_x", 'python -c "print(2)"'))
-    assert med["exitCode"] == 0  # med 免弹窗
+    _assess(monkeypatch, risk="low")
+    low = asyncio.run(gw.run_command("pl_x", 'python -c "print(2)"'))
+    assert low["exitCode"] == 0  # auto_low 默认放行 low
+
+    _assess(monkeypatch, risk="med")
+    med = asyncio.run(gw.run_command("pl_x", 'python -c "print(3)"'))
+    assert med["status"] == "pending_approval"  # med 仍要授权
 
     _assess(monkeypatch, risk="high")
     high = asyncio.run(gw.run_command("pl_x", "del important.txt"))
@@ -216,7 +220,7 @@ def test_gateway_passes_only_command_fields_to_judge(monkeypatch):
     capture: dict = {}
     _assess(monkeypatch, risk="low", capture=capture)
     asyncio.run(gw.run_command("pl_x", 'python -c "print(4)"'))
-    assert set(capture["blob"]) == {"command", "cwd", "workspace"}
+    assert {"command", "cwd", "workspace", "current", "shell", "purpose"} <= set(capture["blob"])
 
 
 # ── 沙盒：密钥剥离与审计 ───────────────────────────────────
@@ -272,7 +276,7 @@ def test_exec_endpoints(monkeypatch):
 
 def test_auto_mode_endpoint_roundtrip():
     client = _client()
-    assert client.get("/api/pipeline/pl_auto/exec/auto-mode").json()["enabled"] is False
+    assert client.get("/api/pipeline/pl_auto/exec/auto-mode").json()["enabled"] is True
     put = client.put("/api/pipeline/pl_auto/exec/auto-mode", json={"enabled": True})
     assert put.status_code == 200
     assert client.get("/api/pipeline/pl_auto/exec/auto-mode").json()["enabled"] is True

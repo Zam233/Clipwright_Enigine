@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -67,7 +68,11 @@ def pending_approvals(pipeline_id: str) -> list[dict[str, Any]]:
 
 
 def auto_mode(pipeline_id: str) -> bool:
-    return bool(_AUTO.get(pipeline_id))
+    # auto_low 默认开启：只影响 low；med/high/critical 仍必须授权。
+    from clipwright.config import settings
+
+    default = bool(getattr(settings, "exec_auto_low", True))
+    return bool(_AUTO.get(pipeline_id, default))
 
 
 def set_auto_mode(pipeline_id: str, enabled: bool) -> bool:
@@ -75,6 +80,38 @@ def set_auto_mode(pipeline_id: str, enabled: bool) -> bool:
     _trace(pipeline_id, "warning" if enabled else "info",
            f"自动模式{'开启' if enabled else '关闭'}")
     return _AUTO[pipeline_id]
+
+
+def restore_approvals(pipeline_id: str, approvals: list[dict[str, Any]]) -> int:
+    """把持久化 store 里的 pending approval 重新灌入内存（重启恢复）。"""
+    bucket = _PENDING.setdefault(str(pipeline_id), {})
+    restored = 0
+    for item in approvals or []:
+        aid = str(item.get("approval_id") or "")
+        if not aid or aid in bucket:
+            continue
+        bucket[aid] = {
+            "id": aid,
+            "pipeline_id": str(pipeline_id),
+            "command": str(item.get("command") or ""),
+            "cwd": str(item.get("cwd") or ""),
+            "kind": str(item.get("kind") or "shell"),
+            "riskLevel": str(item.get("risk") or "high"),
+            "riskReasons": list((item.get("risk_report") or {}).get("reasons") or []),
+            "dangerExplanation": "；".join(
+                (item.get("risk_report") or {}).get("reasons") or []
+            )[:300],
+            "needsConfirm": bool(item.get("needs_confirm")),
+            "needsDoubleConfirm": bool(item.get("needs_double_confirm")),
+            "hardFloor": bool(item.get("hard_floor")),
+            "execRequestId": str(item.get("exec_request_id") or ""),
+            "shell": str((item.get("risk_report") or {}).get("shell") or ""),
+            "history": list(item.get("history") or []),
+            "requestedBy": str(item.get("requested_by") or "kernel"),
+            "expiresAt": str(item.get("expires_at") or ""),
+        }
+        restored += 1
+    return restored
 
 
 def clear_gateway(pipeline_id: str = "") -> None:
@@ -124,7 +161,8 @@ def _truncate(text: str, limit: int = 4000) -> str:
 
 async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
                    risk: str, reasons: list[str], kind: str,
-                   allow_network: bool = False) -> dict[str, Any]:
+                   allow_network: bool = False, shell: str = "",
+                   shell_prefix: tuple[str, ...] = ()) -> dict[str, Any]:
     record = {
         "id": f"ex_{uuid4().hex[:8]}",
         "ts": _utcnow_iso(),
@@ -134,14 +172,25 @@ async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
         "riskLevel": risk,
         "riskReasons": reasons,
         "autoMode": auto_mode(pid),
+        "shell": shell,
         "exitCode": None,
         "durationMs": 0,
         "outputTail": "",
     }
     started = asyncio.get_event_loop().time()
+    if not shell_prefix:
+        try:
+            from clipwright.services.shell_select import select_shell
+
+            _spec = select_shell()
+            shell = shell or _spec.name
+            shell_prefix = _spec.prefix
+        except Exception:  # noqa: BLE001
+            pass
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
+        args = (list(shell_prefix) + [command]) if shell_prefix else command
+        proc = await asyncio.create_subprocess_exec(
+            *args,
             cwd=cwd or None,
             env=_sanitized_env(allow_network),
             stdout=asyncio.subprocess.PIPE,
@@ -174,6 +223,10 @@ async def run_command(
     kind: str = "shell",
     timeout_override: Optional[float] = None,
     risk_text: Optional[str] = None,
+    risk_context: Optional[dict[str, Any]] = None,
+    exec_request_id: str = "",
+    approval_id: str = "",
+    skip_risk: bool = False,
 ) -> dict[str, Any]:
     """网关入口：判定 → 分流 → （必要时）等待授权 → 执行。
 
@@ -184,6 +237,14 @@ async def run_command(
     cmd = str(command or "").strip()
     if not cmd:
         return {"status": "rejected", "reason": "命令为空"}
+    from clipwright.services.shell_select import ShellUnavailable, select_shell
+
+    try:
+        shell_spec = select_shell()
+    except ShellUnavailable as exc:
+        return {"status": "rejected", "reason": str(exc)}
+    shell_name = shell_spec.name
+    shell_prefix = shell_spec.prefix
     allow_network = bool(getattr(_settings, "exec_allow_network", False))
     default_timeout = float(getattr(_settings, "exec_timeout_sec", 60.0) or 60.0)
     timeout_sec = timeout_sec or default_timeout
@@ -211,11 +272,23 @@ async def run_command(
         return {"status": "rejected", "reason": floor, "record": rec}
 
     # 2) 棘轮 + 3) 独立判定（硬底线命中时仍要走这一步：让 LLM 给出它自己的理由）
-    ratchet = ratchet_level(judged_text)
-    assessment = await rv.assess(
-        {"command": judged_text[:4000], "cwd": cwd, "workspace": "管线 workspace"},
-        timeout=timeout_override,
-    )
+    if skip_risk:
+        assessment = {"risk": "low", "reasons": ["已授权执行（跳过重复判定）"], "source": "approved"}
+        ratchet = "low"
+        floor = ""
+    else:
+        ratchet = ratchet_level(judged_text)
+        risk_input = dict(risk_context or {})
+        risk_input.update({
+            "command": judged_text[:4000], "cwd": cwd,
+            "workspace": risk_input.get("workspace_root") or "管线 workspace",
+            "current": risk_input.get("current") or {
+                "kind": kind, "text": judged_text[:4000], "cwd": cwd,
+            },
+            "shell": shell_name,
+            "purpose": risk_input.get("purpose") or "",
+        })
+        assessment = await rv.assess(risk_input, timeout=timeout_override)
     reasons = list(assessment.get("reasons") or [])
     final = max_level(str(assessment.get("risk") or "high"), ratchet)
     if floor:
@@ -226,10 +299,11 @@ async def run_command(
         reasons.append(f"危险种子规则上调为 {final}")
     needs_double_confirm = final == "critical"
 
-    # 5) 分流
-    if final != "low":
+    # 5) 分流：auto_low 默认开启只放行 low；med+ 一律授权
+    needs_approval = final != "low" or not auto_mode(pipeline_id)
+    if needs_approval:
         needs_confirm = rv.requires_confirm({"risk": final}) or needs_double_confirm
-        if not (auto_mode(pipeline_id) and final == "med"):
+        if True:
             approval_id = f"ap_{uuid4().hex[:8]}"
             item = {
                 "id": approval_id,
@@ -243,6 +317,17 @@ async def run_command(
                 "needsConfirm": needs_confirm,
                 "needsDoubleConfirm": needs_double_confirm,
                 "hardFloor": bool(floor),
+                "execRequestId": exec_request_id,
+                "command_sha256": str((risk_context or {}).get("command_sha256") or ""),
+                "cwd_sha256": str((risk_context or {}).get("cwd_sha256") or ""),
+                "shell": shell_name,
+                "riskReport": {
+                    "risk": final,
+                    "reasons": reasons,
+                    "hardFloor": bool(floor),
+                    "shell": shell_name,
+                },
+                "history": list((risk_context or {}).get("history") or []),
                 "requestedBy": "supervisor",
                 # 授权窗口 10 分钟过期：一条高危命令挂三天后再点，风险判断早已失context
                 "expiresAt": _expiry_iso(_APPROVAL_TTL_SEC),
@@ -254,6 +339,7 @@ async def run_command(
     return await _execute(
         pipeline_id, cmd, cwd=cwd, timeout_sec=timeout_sec,
         risk=final, reasons=reasons, kind=kind, allow_network=allow_network,
+        shell=shell_name, shell_prefix=shell_prefix,
     )
 
 
@@ -263,6 +349,10 @@ async def run_python(
     *,
     cwd: str = "",
     timeout_sec: float = 60.0,
+    risk_context: Optional[dict[str, Any]] = None,
+    exec_request_id: str = "",
+    approval_id: str = "",
+    skip_risk: bool = False,
 ) -> dict[str, Any]:
     """执行 Python 脚本（E5）：落临时文件 → `python -I` 子进程 → 走同一网关。
 
@@ -286,10 +376,14 @@ async def run_python(
     except Exception as e:  # noqa: BLE001
         return {"status": "rejected", "reason": f"脚本落盘失败: {e}"}
 
-    cmd = f'"{sys.executable}" -I "{path}"'
+    cmd = (
+        f'& "{sys.executable}" -I "{path}"'
+        if os.name == "nt" else f'"{sys.executable}" -I "{path}"'
+    )
     return await run_command(
         pipeline_id, cmd, cwd=cwd, timeout_sec=timeout_sec, kind="python",
-        risk_text=body,
+        risk_text=body, risk_context=risk_context, exec_request_id=exec_request_id,
+        approval_id=approval_id, skip_risk=skip_risk,
     )
 
 
@@ -330,6 +424,11 @@ async def approve(
             "（second_confirm=true）"
         )
 
+    expected = str(item.get("command_sha256") or "")
+    if expected:
+        actual = hashlib.sha256(str(item.get("command") or "").encode("utf-8")).hexdigest()
+        if actual != expected:
+            raise ValueError("approval_hash_mismatch：命令与批准时不一致，拒绝执行")
     (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
     return await _execute(
         pipeline_id, item["command"], cwd=item.get("cwd", ""),

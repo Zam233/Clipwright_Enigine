@@ -340,6 +340,19 @@ async def stream_task_events(
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
+@router.get("/{task_id}/executions")
+async def get_task_executions(task_id: str, request: Request, limit: int = 100) -> dict:
+    """任务执行历史（exec_store）；前端执行记录页签的数据源。"""
+    _enforce_task_owner(request, task_id)
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    from clipwright.services import exec_store
+
+    items = exec_store.list_history(task, limit=max(1, min(500, int(limit or 100))))
+    return {"task_id": task_id, "count": len(items), "items": items}
+
+
 @router.post("/{task_id}/resume")
 async def resume_task(task_id: str, request: Request) -> dict:
     """继续一个暂停中的任务。

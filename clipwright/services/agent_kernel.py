@@ -1346,11 +1346,14 @@ class AgentKernel:
             status = str(result.get("status") or "")
             if status in ("pending_approval", "needs_human_review"):
                 # 等授权/等人审 ≠ 失败：任务暂停，处理完 resume 继续（PRD A1 / §18.10.4）
+                _approval_detail = {
+                    "tool": name, "approval_id": result.get("approval_id"),
+                    "risk": result.get("risk"), "note": result.get("note"),
+                }
+                if isinstance(result.get("approval"), dict):
+                    _approval_detail.update(result["approval"])
                 emit(task.id, "approval_request",
-                     f"工具 {name} 等待授权",
-                     {"tool": name, "approval_id": result.get("approval_id"),
-                      "risk": result.get("risk"), "note": result.get("note")},
-                     span="tool")
+                     f"工具 {name} 等待授权", _approval_detail, span="tool")
                 _CONTROL[task.id] = "pause"
                 task.status = "paused"
 
