@@ -1,4 +1,4 @@
-"""`image_generate` 工具 —— 主 Agent 的受控文生图入口（第二期）。
+"""`image_generate` / `image_generate_batch` —— 由 image_generate 插件提供的工具。
 
 PRD（image-provider-plugin §8 第二期）：Engine 负责选源、能力校验、落盘、账本与
 素材可见性；厂商协议在 `image_provider` 插件里。本工具只做参数校验与结果映射。
@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from clipwright.config import logger
-from clipwright.services.image_generation import (
+from .service import (
     ImageGenerationError,
     ImageGenerationService,
 )
@@ -72,7 +72,7 @@ class ImageGenerateTool(BaseTool):
     def is_available(self) -> bool:
         """没有可用图像源时不出现在工具面（与旧生成工具「能力即已配置」一致）。"""
         try:
-            from clipwright.services.image_generation import resolve_image_source
+            from .service import resolve_image_source
 
             resolve_image_source()
             return True
@@ -159,3 +159,130 @@ class ImageGenerateTool(BaseTool):
                 "note": note,
             },
         )
+
+
+class ImageGenerateBatchTool(BaseTool):
+    """批量文生图：逐项返回结果，单项失败不拖垮整批。"""
+
+    name = "image_generate_batch"
+    description = (
+        "根据多个文字提示批量生成图片，产物保存到当前项目工作区 materials/image/。"
+        "返回每个 prompt 的独立结果与失败项；需要先在「供应商 → AI 生图」配置图像源。"
+    )
+    capability = "image_generate_batch"
+    capability_priority = 10
+    permission_tier = "costly"
+    agent_callable = True
+    dry_run_capable = False
+    dependencies: list[str] = []
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "prompts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "图片描述列表（每项主体+环境+风格+光线），最多 20 项",
+            },
+            "size": {
+                "type": "string",
+                "description": "尺寸，如 1024x1024；不填用源/provider 默认",
+            },
+            "n": {"type": "integer", "default": 1, "description": "每个 prompt 生成张数"},
+            "model": {"type": "string", "description": "模型 id（不填用源绑定/默认模型）"},
+            "source_id": {"type": "string", "description": "图像源 id（不填用 image 角色绑定）"},
+            "seed": {"type": "integer", "description": "随机种子（可选）"},
+            "concurrency": {"type": "integer", "default": 2, "description": "并发数（1-4）"},
+            "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
+            "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
+        },
+        "required": ["prompts"],
+    }
+
+    def is_available(self) -> bool:
+        try:
+            from .service import resolve_image_source
+
+            resolve_image_source()
+            return True
+        except Exception:  # noqa: BLE001 — 未配置/插件未装都按不可用
+            return False
+
+    async def execute(
+        self,
+        *,
+        prompts: list[str] | None = None,
+        size: str = "",
+        n: int = 1,
+        model: str = "",
+        source_id: str = "",
+        seed: int | None = None,
+        concurrency: int = 2,
+        project_id: str = "",
+        workspace_root: str = "",
+        dry_run: bool = False,
+        **kwargs,
+    ) -> ToolExecResult:
+        if dry_run:
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="image_generate_batch 不支持 dry_run",
+            )
+        root = _resolve_root(project_id, workspace_root)
+        if root is None:
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="未找到工作区（需要 project_id 或 workspace_root 之一，且目录存在）",
+            )
+        clean = [str(p).strip() for p in (prompts or []) if str(p).strip()]
+        if not clean:
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="prompts 不能为空",
+            )
+        if len(clean) > 20:
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error=f"prompts 最多 20 项（收到 {len(clean)}）",
+            )
+
+        import asyncio
+
+        service = ImageGenerationService(root)
+        sem = asyncio.Semaphore(max(1, min(4, int(concurrency or 2))))
+
+        async def _one(index: int, prompt: str) -> dict:
+            async with sem:
+                try:
+                    outcome = await service.generate(
+                        prompt=prompt, size=size, n=n, model=model,
+                        source_id=source_id, seed=seed,
+                    )
+                    return {"index": index, **outcome.as_dict()}
+                except Exception as exc:  # noqa: BLE001 — 逐项失败
+                    return {"index": index, "ok": False, "error": f"{type(exc).__name__}: {exc}",
+                            "prompt": prompt[:120]}
+
+        items = await asyncio.gather(*[_one(i, p) for i, p in enumerate(clean)])
+        ok_count = sum(1 for x in items if x.get("ok"))
+        failed = [x for x in items if not x.get("ok")]
+        try:
+            from clipwright.services.workspace_materials import ensure_workspace_source
+
+            ensure_workspace_source(root)
+        except Exception as exc:  # noqa: BLE001 — 可见性失败不影响产物
+            from clipwright.config import logger
+
+            logger.warning("工作区素材源注册失败: %s", exc)
+
+        output = {
+            "items": items,
+            "summary": {"total": len(items), "ok": ok_count, "failed": len(failed)},
+            "workspace": str(root),
+            "note": "产物已在 materials/image/；插入时间线请用 timeline_insert_images",
+        }
+        if ok_count == 0:
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="所有 prompt 均生成失败", output=output,
+            )
+        return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name, output=output)

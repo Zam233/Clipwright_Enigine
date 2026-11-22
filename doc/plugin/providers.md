@@ -7,7 +7,7 @@ Provider 插件把“厂商差异”关在插件里：核心只持有协议，�
 plugins/llm_openai_compatible/   plugins/llm_anthropic/
 plugins/tts_qwen/                plugins/tts_minimax/       plugins/tts_cosyvoice/
 plugins/stt_providers/           plugins/whisper_stt/
-plugins/image_providers/         plugins/image_gpt_images/
+plugins/image_generate/         plugins/image_gpt_images/
 plugins/embedding_providers/     plugins/rerank_providers/
 plugins/text_motion_core/        plugins/text_motion_llm/
 ```

@@ -29,7 +29,7 @@ def loader(tmp_path):
 @pytest.fixture
 def client(monkeypatch, loader):
     # /available 会读全局门面；这里加载两个图像插件，验证"插件存在即可见"
-    loader.load("image_providers")
+    loader.load("image_generate")
     loader.load("image_gpt_images")
     app = FastAPI()
     app.include_router(providers_api.router)
@@ -37,11 +37,11 @@ def client(monkeypatch, loader):
         yield TestClient(app)
     finally:
         loader.unload("image_gpt_images")
-        loader.unload("image_providers")
+        loader.unload("image_generate")
 
 
-def test_image_providers_are_registered(loader):
-    loader.load("image_providers")
+def test_image_generate_are_registered(loader):
+    loader.load("image_generate")
     try:
         impl = ContributionRegistry.resolve(
             ContributionKind.IMAGE_PROVIDER, "openai_compatible")
@@ -51,9 +51,9 @@ def test_image_providers_are_registered(loader):
         assert caps.size_dialect == "wxh"
         assert impl.object.default_model() == "gpt-image-1"
         assert ContributionRegistry.owner_of(
-            ContributionKind.IMAGE_PROVIDER, "openai_compatible") == "image_providers"
+            ContributionKind.IMAGE_PROVIDER, "openai_compatible") == "image_generate"
     finally:
-        loader.unload("image_providers")
+        loader.unload("image_generate")
 
 
 def test_gpt_images_provider_capabilities(loader):
@@ -130,7 +130,7 @@ def _install_mock_httpx(monkeypatch, handler):
 
 @pytest.mark.asyncio
 async def test_openai_compatible_probe_uses_injected_config(monkeypatch):
-    from plugins.image_providers.main import OpenAICompatibleImageProvider
+    from plugins.image_generate.main import OpenAICompatibleImageProvider
 
     seen = {}
 
@@ -153,7 +153,7 @@ async def test_openai_compatible_generate_b64(monkeypatch):
     import base64
     import httpx
 
-    from plugins.image_providers.main import OpenAICompatibleImageProvider
+    from plugins.image_generate.main import OpenAICompatibleImageProvider
 
     payload = b"\x89PNG fake"
 
@@ -176,7 +176,7 @@ async def test_openai_compatible_generate_url_download_and_ssrf(monkeypatch):
 
     import clipwright.security as security
     from clipwright.providers.base import ImageGenerationRequest
-    from plugins.image_providers.main import OpenAICompatibleImageProvider
+    from plugins.image_generate.main import OpenAICompatibleImageProvider
 
     monkeypatch.setattr(security, "assert_public_url", lambda url: None)
 
@@ -197,7 +197,7 @@ async def test_openai_compatible_generate_url_download_and_ssrf(monkeypatch):
 async def test_openai_compatible_generate_401_raises(monkeypatch):
     import httpx
 
-    from plugins.image_providers.main import OpenAICompatibleImageProvider
+    from plugins.image_generate.main import OpenAICompatibleImageProvider
 
     def handler(request):
         return httpx.Response(401, json={"error": {"message": "invalid key"}})
@@ -255,7 +255,7 @@ async def test_image_model_listing_via_plugin_spec(loader, monkeypatch):
 
     from clipwright.providers.model_listing import list_models_result
 
-    loader.load("image_providers")
+    loader.load("image_generate")
     try:
         def handler(request):
             assert str(request.url).endswith("/models")
@@ -271,4 +271,20 @@ async def test_image_model_listing_via_plugin_spec(loader, monkeypatch):
         assert res.status == "ok", res
         assert res.models == ["gpt-image-2.5"]
     finally:
-        loader.unload("image_providers")
+        loader.unload("image_generate")
+
+
+def test_plugin_contributes_image_tools(loader):
+    from clipwright.tool.registry import ToolRegistry
+
+    loader.load("image_generate")
+    try:
+        generate = ToolRegistry.get("image_generate")
+        batch = ToolRegistry.get("image_generate_batch")
+        assert generate is not None
+        assert batch is not None
+        assert generate.capability == "image_generate"
+        assert batch.capability == "image_generate_batch"
+    finally:
+        loader.unload("image_generate")
+        assert ToolRegistry.get("image_generate") is None

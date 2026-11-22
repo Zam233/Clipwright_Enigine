@@ -1,10 +1,10 @@
-"""AI 生图 Provider 插件（image_providers）—— 通用 OpenAI 兼容实现。
+"""AI 生图插件（image_generate）—— 通用 OpenAI 兼容 provider + 工具。
 
 职责边界（image-provider-plugin PRD §2）：
-- 本插件只做「协议 ↔ 厂商」翻译：`POST {base_url}/images/generations`、
-  Bearer 鉴权、`b64_json` / `url` 两种响应解析、错误转可读中文；
-- **不做**：落盘（Engine 第二期 `image_generate` 工具的职责）、账本、
-  时间线修改、SSRF 校验由插件在下载 url 前先做一次，Engine 侧仍会复检。
+- 本插件同时提供 provider 协议实现与 `image_generate` / `image_generate_batch`
+  工具；工具层负责落盘、账本、时间线插入参数映射、SSRF 校验；
+- Engine 只提供 `ImageProvider` 协议、source 注册/解析，以及工作区/素材/时间线
+  等通用宿主服务。
 
 `gpt-image-1` 这类有专有参数的模型请用 `image_gpt_images` 插件（M5）。
 """
@@ -23,6 +23,7 @@ from clipwright.providers.base import (
     ImageGenerationRequest,
     ImageProviderCapabilities,
 )
+from .tool import ImageGenerateBatchTool, ImageGenerateTool
 
 
 class OpenAICompatibleImageProvider:
@@ -170,16 +171,20 @@ class OpenAICompatibleImageProvider:
         return out
 
 
-class ImageProvidersPlugin(BasePlugin):
-    """AI 生图 provider 插件：贡献一个通用 OpenAI 兼容实现。"""
+class ImageGeneratePlugin(BasePlugin):
+    """AI 生图插件：provider + image_generate / image_generate_batch 工具。"""
 
     def __init__(self) -> None:
         super().__init__()
         self._provider: OpenAICompatibleImageProvider | None = None
+        self._tool: ImageGenerateTool | None = None
+        self._batch_tool: ImageGenerateBatchTool | None = None
 
     def setup(self) -> None:
         # 源配置由宿主在调用时经 extra.source_config 注入；这里只建实例骨架。
         self._provider = OpenAICompatibleImageProvider()
+        self._tool = ImageGenerateTool()
+        self._batch_tool = ImageGenerateBatchTool()
 
     def contributions(self) -> list[Any]:
         assert self._provider is not None
@@ -192,7 +197,11 @@ class ImageProvidersPlugin(BasePlugin):
                     "compatible": True,
                 },
             ),
+            Contribution(ContributionKind.TOOL, "image_generate", self._tool),
+            Contribution(ContributionKind.TOOL, "image_generate_batch", self._batch_tool),
         ]
 
     def shutdown(self) -> None:
         self._provider = None
+        self._tool = None
+        self._batch_tool = None

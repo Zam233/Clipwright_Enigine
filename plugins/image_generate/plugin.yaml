@@ -1,12 +1,12 @@
-id: "image_providers"
-name: "AI 生图 Provider（OpenAI 兼容）"
-version: "1.0.0"
+id: "image_generate"
+name: "AI 生图（image_generate）"
+version: "1.1.0"
 kind: "capability"
-description: "通用 OpenAI 兼容图像生成 provider：POST {base_url}/images/generations，支持 b64_json / url 两种响应；厂商知识只在本插件"
+description: "文生图工具与 provider：image_generate / image_generate_batch，产物落工作区 materials/image/；厂商知识只在本插件"
 author: "Clipwright Team"
-entry_point: "image_providers.main"
+entry_point: "image_generate.main"
 
-# 声明即授权（新契约）：第 20 类贡献 image_provider（image-provider-plugin PRD M4）
+# 声明即授权（新契约）：image_provider + tool 贡献
 api_version: "2"
 contributions:
   - kind: image_provider
@@ -22,3 +22,7 @@ contributions:
       max_prompt_chars: 4000
       concurrency: 2
       size_dialect: "wxh"
+  - kind: tool
+    id: image_generate
+  - kind: tool
+    id: image_generate_batch

@@ -1,11 +1,9 @@
-"""图像生成服务 —— 宿主侧的「解析 provider → 校验能力 → 调用 → 落盘 → 记账」。
+"""image_generate 插件的生成服务：解析 provider → 校验能力 → 调用 → 落盘 → 记账。
 
-职责边界（image-provider-plugin PRD §2）：
-- **Engine**：选源/选模型、能力协商（尺寸/数量/参考图）、产物路径与命名、
-  内容去重（sha256）、幂等（prompt+参数命中账本直接复用）、账本、工作区素材登记；
-- **插件**：只做协议 ↔ 厂商翻译（HTTP、鉴权、响应解析）。
-
-工具（`tool/image_generate.py`）只是本服务的薄包装：参数校验与工具结果映射。
+职责边界：
+- **本插件**：选源/选模型、能力协商、产物路径/命名、sha256 去重、幂等账本、
+  工作区素材登记，以及 `image_generate` / `image_generate_batch` 工具；
+- **Engine**：只提供 `ImageProvider` 协议、源配置/注册、工作区/素材/时间线等通用服务。
 """
 
 from __future__ import annotations
@@ -191,7 +189,7 @@ class ImageGenerationService:
         item = ContributionRegistry.resolve(ContributionKind.IMAGE_PROVIDER, provider_id)
         if item is None:
             raise ImageGenerationError(
-                f"未安装图像 provider: {provider_id}（请安装 image_providers 插件）")
+                f"未安装图像 provider: {provider_id}（请安装 image_generate 插件）")
         return item.object
 
     def _cached(self, key: str) -> dict[str, Any] | None:

@@ -21,9 +21,9 @@ from clipwright.providers.base import (
 from clipwright.schema.timeline import Timeline
 from clipwright.services import provider_sources as ps
 from clipwright.services import task_blackboard as bb
-from clipwright.services.image_generation import ImageGenerationService
+from plugins.image_generate.service import ImageGenerationService
 from clipwright.services.workspace_materials import ensure_workspace_source
-from clipwright.tool.image_generate import ImageGenerateTool
+from plugins.image_generate.tool import ImageGenerateTool
 from clipwright.tool.timeline_insert_image import TimelineInsertImageTool
 
 PNG = b"\x89PNG\r\n\x1a\nfake-image-bytes"
@@ -189,3 +189,31 @@ async def test_timeline_insert_image_at_second(workspace, fake_provider):
     clips = [c for t in raw["tracks"] for c in t["clips"]]
     assert clips[0]["start_sec"] == 2.5
     bb.reset("task_img_at")
+
+
+@pytest.mark.asyncio
+async def test_image_generate_batch_partial_failure(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from plugins.image_generate import tool as tool_mod
+
+    class FakeService:
+        def __init__(self, _root):
+            self.root = _root
+
+        async def generate(self, *, prompt, **_kwargs):
+            if "bad" in prompt:
+                raise RuntimeError("provider failed")
+            return SimpleNamespace(ok=True, rel_path=f"materials/image/{prompt}.png",
+                                   sha256="x", mime="image/png", as_dict=lambda: {
+                                       "ok": True, "rel_path": f"materials/image/{prompt}.png",
+                                       "sha256": "x", "mime": "image/png",
+                                   })
+
+    monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
+    tool = tool_mod.ImageGenerateBatchTool()
+    out = await tool.execute(
+        prompts=["good", "bad"], workspace_root=str(tmp_path), concurrency=2,
+    )
+    assert str(out.status) == "success"
+    assert out.output["summary"] == {"total": 2, "ok": 1, "failed": 1}
+    assert out.output["items"][1]["ok"] is False
