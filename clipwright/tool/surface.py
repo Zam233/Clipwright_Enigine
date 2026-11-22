@@ -830,6 +830,39 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
             merged_inputs.setdefault("script_text", script_ref["text"])
             merged_inputs.setdefault("script_sha256", script_ref["sha256"])
 
+    if name == DELEGATE_AGENT:
+        from clipwright.services import stage_inputs as _si
+        from clipwright.services import task_blackboard as _bb
+
+        _stage = str(payload.get("stage") or "")
+        try:
+            _board = _bb.get(str(getattr(task, "id", "") or ""))
+            _errors = _si.preflight(
+                _stage, task=task, board=_board, inputs=merged_inputs,
+            )
+        except Exception as exc:  # noqa: BLE001 — 预检本身失败不阻断，交给阶段
+            logger.warning("阶段输入预检失败（跳过） %s: %s", _stage, exc)
+            _errors = []
+        # 缺上游（input_insufficient）仍交给阶段 Adapter 返回 needs，保持旧语义；
+        # 只有字段/类型错误在派发前拒绝，避免把 407s 白跑留到阶段内部。
+        _hard = [e for e in _errors if e.get("category") == "input_invalid"]
+        if _hard:
+            _errors = _hard
+            _bp = "; ".join(str(e.get("message") or "") for e in _errors[:5])[:300]
+            out = {
+                "status": "refused",
+                "error": f"阶段输入预检失败：{_bp}",
+                "failure": {
+                    "category": "input_invalid",
+                    "retryable": "needs_human",
+                    "blocking_point": _bp,
+                    "evidence": _errors,
+                },
+            }
+            out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                                   "refused", 0.0, out["error"])
+            return out
+
     spec = RunSpec(
         kind="stage" if name == DELEGATE_AGENT else "research",
         stage=str(payload.get("stage") or ""),

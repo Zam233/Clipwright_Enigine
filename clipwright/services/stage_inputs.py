@@ -67,6 +67,48 @@ def missing_keys(stage: str, board: dict[str, Any], override: dict[str, Any] | N
     return [k for k in REQUIRED_KEYS.get(stage, ()) if k not in available]
 
 
+def preflight(stage: str, *, task: Any, board: dict[str, Any] | None = None,
+              inputs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """派发前预检：构造 Input 并返回可读错误（不执行阶段）。
+
+    R7：把 `glow_color` 之类的 Pydantic 错误挡在 `delegate_agent` 之前，
+    避免整段阶段白跑后才在写时间线时失败。
+    """
+    try:
+        assemble(stage, task=task, board=board or {}, override=inputs or {})
+        return []
+    except StageInputMissing as exc:
+        return [{
+            "field": key,
+            "category": "input_insufficient",
+            "message": f"缺少必需输入: {key}",
+            "suggestion": f"先派 {KEY_PRODUCER.get(key, 'structure')}",
+        } for key in exc.missing]
+    except Exception as exc:  # noqa: BLE001 — ValidationError 等
+        errors = getattr(exc, "errors", None)
+        if callable(errors):
+            out=[]
+            try:
+                for err in errors()[:20]:
+                    loc=".".join(str(x) for x in (err.get("loc") or ()))
+                    out.append({
+                        "field": loc or "inputs",
+                        "category": "input_invalid",
+                        "message": str(err.get("msg") or "输入校验失败")[:300],
+                        "suggestion": "按字段约束修正后重派；颜色字段必须是 #RRGGBB",
+                    })
+            except Exception:  # noqa: BLE001
+                out=[]
+            if out:
+                return out
+        return [{
+            "field": "inputs",
+            "category": "input_invalid",
+            "message": f"{type(exc).__name__}: {exc}"[:300],
+            "suggestion": "检查输入 shape 与字段约束",
+        }]
+
+
 def validate(stage: str, inputs: dict[str, Any],
              board: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """校验主 agent 显式给的 inputs；返回 `needs[]`（空列表 = 齐了）。
