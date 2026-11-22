@@ -15,6 +15,7 @@ from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
 from clipwright.services import task_blackboard as bb
 from clipwright.services import tool_jobs
+from clipwright.tool.batch_contract import attach_batch_contract
 from clipwright.services.intent_apply import (
     PatchOp,
     PatchPlan,
@@ -342,9 +343,11 @@ class TimelineInsertImagesTool(BaseTool):
             tool_jobs.finish(job.job_id, failed=0)
             return ToolExecResult(
                 status=ToolStatus.SUCCESS, tool_name=self.name,
-                output={"job_id": job.job_id, "dry_run": True, "source_key": key,
-                        "items": results, "report": report.model_dump(),
-                        "problems": [p.model_dump() for p in report.problems]},
+                output=attach_batch_contract({
+                    "job_id": job.job_id, "dry_run": True, "source_key": key,
+                    "items": results, "report": report.model_dump(),
+                    "problems": [p.model_dump() for p in report.problems]},
+                    job_id=job.job_id),
             )
 
         new_timeline, report = apply_patch(timeline, plan)
@@ -371,9 +374,9 @@ class TimelineInsertImagesTool(BaseTool):
         tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
-            output={"job_id": job.job_id, "items": results, "added_clip_ids": added,
-                    "clips_before": report.clips_before,
+            output=attach_batch_contract({"job_id": job.job_id, "items": results,
+                    "added_clip_ids": added, "clips_before": report.clips_before,
                     "clips_after": report.clips_after,
                     "warnings": [p.model_dump() for p in report.problems
-                                 if p.level == "warning"]},
+                                 if p.level == "warning"]}, job_id=job.job_id),
         )

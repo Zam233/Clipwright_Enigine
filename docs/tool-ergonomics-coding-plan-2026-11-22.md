@@ -481,33 +481,22 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 
 ---
 
-## 7. 执行进度（2026-11-22）
+## 7. 执行进度（开发环境收口）
 
-| WP | 状态 | 提交 | 备注 |
-|---|---|---|---|
-| WP2 image_generate 插件化 | 完成 | `ac0bc00` | provider + image_generate/batch 工具迁入插件；Engine 删除该工具 |
-| WP1 vision_llm_batch | 完成（工具+material 接入） | `e86b576` 及前序 | 批量、缓存、单项失败；material top 候选使用 |
-| WP5 工作区查询 | 完成 | `83f32ab`、`2b9bb0a` | glob/tree/grep/range + artifact_search/summary |
-| WP3 video_trim_batch | 工具完成，EditAgent 待接入 | `433ac04` | 批量并发、逐项失败 |
-| WP4 generate_mg_batch | 工具完成，AnimationAgent 待接入 | `f528ba7` | 批量并发、逐项失败 |
-| WP7 派发前预检 | 完成 | `6ef0c52` | input_invalid 拒绝，input_insufficient 软处理 |
-| WP6 research 工作区 | 完成 | `d70eac2`、`873ce41` | 工作区注入、grep/glob/tree/range |
-| WP8 进度/取消/心跳 | 部分完成 | — | 文字动画进度已修；batch job 进度/取消未做 |
-| WP9 quality | 完成（质量门 + report） | `6e5bae3`、`b98813e` | final_timeline 后强制 quality；quality_report |
-| WP10 R10 复盘 | 完成（快照+访谈） | `e3277c2`、`bfbfe55` | 只读 review 与按角色 interview |
-| WP8 job 基础设施 | 完成（REST + 事件流） | `028df72`、`caa8fc0`、`958200f`、`6a72f26` | 有界 job、逐项进度、取消感知、任务事件流 |
-| 调研 worker 工作区 | 完成 | `873ce41` | glob/tree/range 开放给 worker |
+| WP | 状态 | 说明 |
+|---|---|---|
+| WP0 批量契约 | 完成 | `BatchResult/BatchItem/JobRef/ToolError` + 契约测试；工具输出附 `batch` |
+| WP1 vision_llm_batch | 完成 | source_fps 缓存、超时、重试、指标、material 接入 |
+| WP2 image_generate 插件化 | 完成 | provider + 单张/批量工具；Engine 无 image 工具；异步 job + insert |
+| WP3 video_trim_batch / apply_edl | 完成 | track/position/failures/幂等/缓存；EditAgent 两阶段 EDL；apply_edl |
+| WP4 MG batch/preview/validate | 完成 | 批量、前置校验、preview_path、validate/preview 工具 |
+| WP5 工作区查询 | 完成 | glob/tree/range/grep、artifact、candidate query/rerank/dedupe、分页 |
+| WP6 research | 完成 | workspace 注入、grep/glob/tree/range、worker read_artifact、全失败 tool_failed |
+| WP7 派发前预检 | 完成 | `validate_agent_inputs` / preflight；input_invalid 硬拦截 |
+| WP8 进度/取消/心跳 | 完成 | job_id、heartbeat、cancel API、subagent_progress、timeline job |
+| WP9 quality | 完成 | 质量门读取 passed、quality_report 黑板 issues、结构化报告 |
+| WP10 R10 复盘 | 完成 | GET/POST review、按角色 interview、tool_calls 快照 |
 
-收尾状态（后续 Goal 已完成）：
+开发环境边界：已删除旧 `generated_assets` 兼容层与 `image_providers` 数据迁移，不保留旧数据/API 兼容。
 
-- EditAgent 已做 EDL 全段预取并消费 `video_trim_batch`（`e5eb6eb`）；
-- AnimationAgent 已对 `mg_dynamic` 与 typed 逻辑动画做 `generate_mg_batch` 预生成（`bf6a650`、`69540cc`）；
-- `image_generate_batch` 已走 provider 原生 `generate_batch`，失败逐项回退（`d0e066b`、`5349add`）。
-
-已完成但需注意：
-
-- 通用 batch job 已有 REST 查询、逐项进度、取消感知与任务事件流；心跳仍由单次工具调用生命周期隐式承担；
-- quality 门默认开启（`agent_quality_gate=True`），单测 fixture 默认关闭；
-
-结论：工具工效改造的插件边界、批量工具、工作区查询、research、预检、quality、复盘与 job 基础设施已落地；
-edit/animation 的批量消费与 image provider 原生 batch 仍需后续实现，**当前不宣称全部完成**。
+剩余工作：全量实现完成后的统一独立测试、静态检查与 Coding Plan/API 文档终检。

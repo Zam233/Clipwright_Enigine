@@ -17,6 +17,7 @@ from .service import (
 )
 from clipwright.tool.base import BaseTool, ToolExecResult, ToolStatus
 from clipwright.services import tool_jobs
+from clipwright.tool.batch_contract import attach_batch_contract
 
 
 def _resolve_root(project_id: str = "", workspace_root: str = "") -> Path | None:
@@ -305,13 +306,13 @@ class ImageGenerateBatchTool(BaseTool):
 
             logger.warning("工作区素材源注册失败: %s", exc)
 
-        output = {
+        output = attach_batch_contract({
             "job_id": job.job_id,
             "items": items,
             "summary": {"total": len(items), "ok": ok_count, "failed": len(failed)},
             "workspace": str(root),
             "note": "产物已在 materials/image/；插入时间线请用 timeline_insert_images",
-        }
+        }, job_id=job.job_id)
         if ok_count == 0:
             return ToolExecResult(
                 status=ToolStatus.ERROR, tool_name=self.name,

@@ -17,6 +17,7 @@ from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.capabilities import resolve
 from clipwright.services import tool_jobs
+from clipwright.tool.batch_contract import attach_batch_contract
 
 _CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _CACHE_MAX = 1024
@@ -185,14 +186,15 @@ class VisionBatchTool(BaseTool):
         ok = sum(1 for x in items if x.get("status") == "ok")
         tool_jobs.finish(job.job_id, failed=len(items) - ok,
                          error="" if ok else "所有候选视觉评分失败")
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS if ok else ToolStatus.ERROR,
-            tool_name=self.name,
-            error="" if ok else "所有候选视觉评分失败",
-            output={
+        output = attach_batch_contract({
                 "job_id": job.job_id,
                 "items": items,
                 "summary": {"total": len(items), "ok": ok, "failed": len(items) - ok},
                 "metrics": dict(metrics),
-            },
+            }, job_id=job.job_id)
+        return ToolExecResult(
+            status=ToolStatus.SUCCESS if ok else ToolStatus.ERROR,
+            tool_name=self.name,
+            error="" if ok else "所有候选视觉评分失败",
+            output=output,
         )

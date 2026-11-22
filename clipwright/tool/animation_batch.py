@@ -16,6 +16,7 @@ from clipwright.tool.base import BaseTool
 from clipwright.animation.mg.validator import validate_mg_json
 from clipwright.animation.mg_renderer import MGRenderer
 from clipwright.services import tool_jobs
+from clipwright.tool.batch_contract import attach_batch_contract
 
 
 def _preview(mg_def: dict[str, Any], workspace_root: str, project_id: str) -> dict[str, str]:
@@ -205,13 +206,15 @@ class GenerateMGBatchTool(BaseTool):
         ok_count = sum(1 for x in results if x["status"] == "ok")
         tool_jobs.finish(job.job_id, failed=len(results) - ok_count,
                          error="" if ok_count else "所有 MG 生成任务均失败")
+        output = attach_batch_contract({
+                "job_id": job.job_id,
+                "job_id": job.job_id,
+                "items": results,
+                "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
+            }, job_id=job.job_id)
         return ToolExecResult(
             status=ToolStatus.SUCCESS if ok_count else ToolStatus.ERROR,
             tool_name=self.name,
             error="" if ok_count else "所有 MG 生成任务均失败",
-            output={
-                "job_id": job.job_id,
-                "items": results,
-                "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
-            },
+            output=output,
         )

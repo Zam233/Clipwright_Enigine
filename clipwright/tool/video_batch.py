@@ -14,6 +14,7 @@ from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.capabilities import resolve
 from clipwright.services import tool_jobs
+from clipwright.tool.batch_contract import attach_batch_contract
 
 _BATCH_CACHE: dict[str, dict[str, Any]] = {}
 _TRIM_CACHE: dict[tuple[str, float, float], str] = {}
@@ -163,6 +164,7 @@ class VideoTrimBatchTool(BaseTool):
                 "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
                 "failures": [x for x in results if x["status"] != "ok"],
             }
+        output = attach_batch_contract(output, job_id=job.job_id)
         if idempotency_key:
             _BATCH_CACHE[idempotency_key] = output
             while len(_BATCH_CACHE) > 128:
