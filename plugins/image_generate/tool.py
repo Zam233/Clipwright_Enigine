@@ -252,6 +252,8 @@ class ImageGenerateBatchTool(BaseTool):
         sem = asyncio.Semaphore(max(1, min(4, int(concurrency or 2))))
 
         async def _one(index: int, prompt: str) -> dict:
+            if tool_jobs.is_cancelled(job.job_id):
+                return {"index": index, "status": "skipped", "error": "cancelled"}
             async with sem:
                 try:
                     outcome = await service.generate(
@@ -264,7 +266,19 @@ class ImageGenerateBatchTool(BaseTool):
                             "prompt": prompt[:120]}
 
         job = tool_jobs.create("image_generate_batch", len(clean))
-        items = await asyncio.gather(*[_one(i, p) for i, p in enumerate(clean)])
+        progress = {"ok": 0, "failed": 0}
+
+        async def _tracked(index: int, prompt: str) -> dict:
+            result = await _one(index, prompt)
+            if result.get("ok"):
+                progress["ok"] += 1
+            else:
+                progress["failed"] += 1
+            tool_jobs.update(job.job_id, completed=progress["ok"],
+                             failed=progress["failed"])
+            return result
+
+        items = await asyncio.gather(*[_tracked(i, p) for i, p in enumerate(clean)])
         ok_count = sum(1 for x in items if x.get("ok"))
         failed = [x for x in items if not x.get("ok")]
         tool_jobs.finish(job.job_id, failed=len(failed),

@@ -75,6 +75,8 @@ class GenerateMGBatchTool(BaseTool):
 
         async def _one(index: int, row: dict[str, Any]) -> dict[str, Any]:
             started = time.monotonic()
+            if tool_jobs.is_cancelled(job.job_id):
+                return {"index": index, "status": "skipped", "error": "cancelled"}
             async with sem:
                 try:
                     result = await gen.generate(
@@ -103,7 +105,19 @@ class GenerateMGBatchTool(BaseTool):
                     }
 
         job = tool_jobs.create("generate_mg_batch", len(rows))
-        results = await asyncio.gather(*[_one(i, r) for i, r in enumerate(rows)])
+        progress = {"ok": 0, "failed": 0}
+
+        async def _tracked(index: int, row: dict[str, Any]) -> dict[str, Any]:
+            result = await _one(index, row)
+            if result.get("status") == "ok":
+                progress["ok"] += 1
+            else:
+                progress["failed"] += 1
+            tool_jobs.update(job.job_id, completed=progress["ok"],
+                             failed=progress["failed"])
+            return result
+
+        results = await asyncio.gather(*[_tracked(i, r) for i, r in enumerate(rows)])
         ok_count = sum(1 for x in results if x["status"] == "ok")
         tool_jobs.finish(job.job_id, failed=len(results) - ok_count,
                          error="" if ok_count else "所有 MG 生成任务均失败")

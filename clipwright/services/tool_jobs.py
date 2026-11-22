@@ -53,6 +53,8 @@ def update(job_id: str, *, completed: int | None = None, failed: int | None = No
     job = _JOBS.get(str(job_id))
     if job is None:
         return None
+    if job.status == "cancelled":
+        return job.as_dict()
     if completed is not None:
         job.completed = max(0, int(completed))
     if failed is not None:
@@ -71,8 +73,15 @@ def finish(job_id: str, *, failed: int = 0, error: str = "") -> dict[str, Any] |
     job = _JOBS.get(str(job_id))
     if job is None:
         return None
+    if job.status == "cancelled":
+        return job.as_dict()
     return update(str(job_id), completed=job.total, failed=failed, error=error,
                   status="partial" if failed else "done")
+
+
+def is_cancelled(job_id: str) -> bool:
+    job = _JOBS.get(str(job_id))
+    return job is not None and job.status == "cancelled"
 
 
 def cancel(job_id: str, reason: str = "cancelled") -> dict[str, Any] | None:

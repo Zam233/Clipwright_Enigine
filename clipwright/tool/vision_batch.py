@@ -105,8 +105,12 @@ class VisionBatchTool(BaseTool):
         ctx = dict(scene_context or {})
         frames = max(1, min(6, int(frame_count or 3)))
         sem = asyncio.Semaphore(max(1, min(8, int(concurrency or 4))))
+        job = tool_jobs.create("vision_llm_batch", len(rows))
+        progress = {"ok": 0, "failed": 0}
 
         async def _one(index: int, asset: dict[str, Any]) -> dict[str, Any]:
+            if tool_jobs.is_cancelled(job.job_id):
+                return {"index": index, "status": "skipped", "error": "cancelled"}
             key = _cache_key(asset, ctx, frames)
             cached = _CACHE.get(key)
             if cached is not None:
@@ -139,8 +143,17 @@ class VisionBatchTool(BaseTool):
                     return {"index": index, "status": "failed",
                             "error": f"{type(exc).__name__}: {exc}"}
 
-        job = tool_jobs.create("vision_llm_batch", len(rows))
-        items = await asyncio.gather(*[_one(i, a) for i, a in enumerate(rows)])
+        async def _tracked(index: int, asset: dict[str, Any]) -> dict[str, Any]:
+            result = await _one(index, asset)
+            if result.get("status") == "ok":
+                progress["ok"] += 1
+            elif result.get("status") != "skipped":
+                progress["failed"] += 1
+            tool_jobs.update(job.job_id, completed=progress["ok"],
+                             failed=progress["failed"])
+            return result
+
+        items = await asyncio.gather(*[_tracked(i, a) for i, a in enumerate(rows)])
         ok = sum(1 for x in items if x.get("status") == "ok")
         tool_jobs.finish(job.job_id, failed=len(items) - ok,
                          error="" if ok else "所有候选视觉评分失败")
