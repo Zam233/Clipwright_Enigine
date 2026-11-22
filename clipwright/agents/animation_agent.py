@@ -685,6 +685,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 类型化 LLM 生成是等待型：优先用 animation_llm_concurrency，
             # 未配置则回落到 pipeline_concurrency（保持旧行为）。
             if logic_jobs:
+                await self._prefetch_mg_dynamic(logic_jobs, context)
                 _conc = (getattr(settings, "animation_llm_concurrency", None)
                          or getattr(settings, "pipeline_concurrency", 3))
                 sem = asyncio.Semaphore(max(1, int(_conc)))
@@ -2097,6 +2098,66 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
         return {}
 
+    async def _prefetch_mg_dynamic(self, logic_jobs: list[Any], context: Any) -> None:
+        """对 mg_dynamic 作业做一次批量预生成，结果按 clip_id 缓存。
+
+        只覆盖 mg_dynamic、非事实片段；批量失败/任务数超上限时原路径逐段生成。
+        """
+        cache = getattr(self, "_mg_batch_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._mg_batch_cache = cache
+        items: list[dict[str, Any]] = []
+        clip_ids: list[str] = []
+        for _track, c, aid, _aname, marker, style in logic_jobs:
+            if str(aid) != "mg_dynamic":
+                continue
+            cid = str(getattr(c, "id", "") or "")
+            if not cid or cid in getattr(self, "_fact_clip_ids", set()):
+                continue
+            payload = marker.get("payload") if isinstance(marker, dict) else None
+            desc = str((payload or {}).get("description") or "") if isinstance(payload, dict) else ""
+            text = str((payload or {}).get("text") or "") if isinstance(payload, dict) else ""
+            if not desc:
+                desc = str((c.metadata or {}).get("description") or c.text or "")
+            if not desc:
+                continue
+            meta = c.metadata or {}
+            items.append({
+                "description": desc,
+                "text_content": self._strip_json_payload(text) or self._extract_text_content(c, marker),
+                "persona_style": style or {},
+                "scene_context": {
+                    "clip_id": cid, "title": meta.get("title", ""),
+                    "keywords": meta.get("keywords", []),
+                    "description": meta.get("description", ""),
+                },
+                "width": self._tl_width, "height": self._tl_height,
+            })
+            clip_ids.append(cid)
+            if len(items) >= 12:
+                break
+        if not items:
+            return
+        try:
+            result = await self.call_tool("generate_mg_batch", items=items, concurrency=2)
+        except Exception as exc:  # noqa: BLE001 — 批量不可用走原路径
+            logger.debug("AnimationAgent: generate_mg_batch 不可用: %s", exc)
+            return
+        if str(getattr(result, "status", "")) not in ("success", "ok"):
+            return
+        out = getattr(result, "output", None) or {}
+        for row, cid in zip(out.get("items") or [], clip_ids):
+            if row.get("status") != "ok" or not row.get("mg_def"):
+                continue
+            cache[cid] = {
+                "success": True, "mg_def": row["mg_def"],
+                "method": row.get("method") or "batch",
+            }
+        if cache:
+            add_event(context.pipeline_id, "animation", "mg_batch_prefetch",
+                      f"mg_dynamic 批量预生成 {len(cache)} 段")
+
     async def _handle_llm_mg(
         self,
         anim_track: Track,
@@ -2127,6 +2188,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 跳过")
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
+
+        cached_mg = getattr(self, "_mg_batch_cache", {}).pop(
+            str(getattr(vid_clip, "id", "") or ""), None)
+        if cached_mg:
+            class _CachedMG:
+                def __init__(self, result):
+                    self._result = result
+
+                async def generate(self, **_kwargs):
+                    return self._result
+
+                async def generate_best(self, **_kwargs):
+                    return self._result
+
+            mg_gen = _CachedMG(cached_mg)
 
         # 解析 JSON payload：优先 catalog 已解析的结构化字段（marker["payload"]），
         # 否则把 text_content 当 JSON 串解析（旧 marker 兼容）
