@@ -8,6 +8,7 @@
 
 from clipwright.tool.animation import TrackingTextTool, TypewriterAnimationTool
 from clipwright.tool.animation_list import ListAnimationsTool
+from clipwright.tool.animation_batch import GenerateMGBatchTool
 from clipwright.tool.describe_llm_mg import DescribeLLMMGTool
 from clipwright.tool.audio import (
     AudioExtractTool,
@@ -161,6 +162,7 @@ def register_builtin_tools() -> None:
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
+        GenerateMGBatchTool(),
         DescribeLLMMGTool(),
         WebSearchTool(),
         WebFetchTool(),

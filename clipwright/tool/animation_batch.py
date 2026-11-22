@@ -1,0 +1,114 @@
+"""`generate_mg_batch` —— 一批 MG 动画一次提交。
+
+Engine 负责并发与逐项失败；实际 MG 生成仍复用 `animation.mg.MGGenerator`。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Any
+
+from clipwright.schema.tool import ToolExecResult, ToolStatus
+from clipwright.tool.base import BaseTool
+
+
+class GenerateMGBatchTool(BaseTool):
+    """批量生成 MG 动画；单批最多 12 项。"""
+
+    name = "generate_mg_batch"
+    capability = "generate_mg_batch"
+    capability_priority = 10
+    permission_tier = "costly"
+    agent_callable = True
+    dry_run_capable = False
+    dependencies: list[str] = []
+    description = (
+        "批量生成 MG 动画：items[] 每项 {description,text_content,persona_style?,scene_context?}；"
+        "逐项返回 mg_def/status/error，单批最多 12 项。"
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "text_content": {"type": "string"},
+                        "persona_style": {"type": "object"},
+                        "scene_context": {"type": "object"},
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"},
+                    },
+                    "required": ["description", "text_content"],
+                },
+            },
+            "concurrency": {"type": "integer", "default": 2, "minimum": 1, "maximum": 4},
+            "pipeline_id": {"type": "string"},
+        },
+        "required": ["items"],
+    }
+
+    async def execute(
+        self, *, items: list[dict[str, Any]] | None = None,
+        concurrency: int = 2, pipeline_id: str = "", **kwargs: Any,
+    ) -> ToolExecResult:
+        rows = [x for x in (items or []) if isinstance(x, dict)]
+        if not rows:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="items 不能为空")
+        if len(rows) > 12:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=f"items 最多 12 项（收到 {len(rows)}）")
+        try:
+            from clipwright.animation.mg.generator import MGGenerator
+
+            gen = MGGenerator()
+        except Exception as exc:  # noqa: BLE001
+            return ToolExecResult(status=ToolStatus.NOT_FOUND, tool_name=self.name,
+                                  error=f"MG 生成器不可用: {exc}")
+        sem = asyncio.Semaphore(max(1, min(4, int(concurrency or 2))))
+
+        async def _one(index: int, row: dict[str, Any]) -> dict[str, Any]:
+            started = time.monotonic()
+            async with sem:
+                try:
+                    result = await gen.generate(
+                        description=str(row.get("description") or ""),
+                        text_content=str(row.get("text_content") or ""),
+                        persona_style=dict(row.get("persona_style") or {}),
+                        scene_context=dict(row.get("scene_context") or {}),
+                        pipeline_id=pipeline_id or None,
+                        width=int(row["width"]) if row.get("width") else None,
+                        height=int(row["height"]) if row.get("height") else None,
+                    )
+                    ok = bool(result.get("success", True)) and bool(result.get("mg_def"))
+                    return {
+                        "index": index,
+                        "status": "ok" if ok else "failed",
+                        "mg_def": result.get("mg_def") if ok else None,
+                        "method": result.get("method", ""),
+                        "error": "" if ok else str(result.get("error") or "MG generation failed")[:300],
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                    }
+                except Exception as exc:  # noqa: BLE001 — 单项失败隔离
+                    return {
+                        "index": index, "status": "failed", "mg_def": None,
+                        "error": f"{type(exc).__name__}: {exc}"[:300],
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                    }
+
+        results = await asyncio.gather(*[_one(i, r) for i, r in enumerate(rows)])
+        ok_count = sum(1 for x in results if x["status"] == "ok")
+        return ToolExecResult(
+            status=ToolStatus.SUCCESS if ok_count else ToolStatus.ERROR,
+            tool_name=self.name,
+            error="" if ok_count else "所有 MG 生成任务均失败",
+            output={
+                "items": results,
+                "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
+            },
+        )
