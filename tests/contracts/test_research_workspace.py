@@ -134,3 +134,15 @@ def test_worker_glob_and_range(tmp_path, monkeypatch) -> None:
     assert glob["count"] == 1
     part = asyncio.run(ex("read_file_range", {"path": "reports/a.md", "offset": 2, "length": 4}))
     assert part["content"] == "2345"
+
+
+def test_worker_read_artifact(tmp_path, monkeypatch) -> None:
+    (tmp_path / "artifacts").mkdir()
+    (tmp_path / "artifacts" / "art_x.json").write_text('{"scenes": [1]}', encoding="utf-8")
+    import clipwright.security as security
+
+    monkeypatch.setattr(security, "allowed_media_roots", lambda: [tmp_path])
+    ex = build_executor("p_art", "sa", allowed=("read_artifact",),
+                        workspace_root=str(tmp_path), project_id="p")
+    out = asyncio.run(ex("read_artifact", {"artifact": "art_x"}))
+    assert out["content"]["scenes"] == [1]

@@ -58,6 +58,16 @@ async def get_tool_job(job_id: str) -> dict:
     return job
 
 
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_tool_job(job_id: str, reason: str = "cancelled") -> dict:
+    from clipwright.services import tool_jobs
+
+    job = tool_jobs.cancel(job_id, reason=reason)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+    return job
+
+
 @router.get("/list", response_model=list[ToolInfo])
 async def list_tools() -> list[ToolInfo]:
     """列出所有已注册的原子能力工具及其可用状态。"""

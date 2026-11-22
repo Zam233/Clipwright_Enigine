@@ -134,6 +134,21 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "read_artifact": {
+        "type": "function",
+        "function": {
+            "name": "read_artifact",
+            "description": "读取工作区产物 JSON（artifact id 或 path；可 json_path 取子树）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact": {"type": "string"},
+                    "path": {"type": "string"},
+                    "json_path": {"type": "string"},
+                },
+            },
+        },
+    },
     "grep_workspace": {
         "type": "function",
         "function": {
@@ -389,6 +404,13 @@ async def _dispatch_inner(
                 str(args.get("path", "")),
                 workspace_root=workspace_root, project_id=project_id,
             )
+        if tool == "read_artifact":
+            return _delegate("read_artifact", {
+                "artifact": str(args.get("artifact", "")),
+                "path": str(args.get("path", "")),
+                "json_path": str(args.get("json_path", "")),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
         if tool == "glob_workspace":
             return _delegate("glob_workspace", {
                 "pattern": str(args.get("pattern", "")),

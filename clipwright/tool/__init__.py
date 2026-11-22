@@ -9,6 +9,8 @@
 from clipwright.tool.animation import TrackingTextTool, TypewriterAnimationTool
 from clipwright.tool.animation_list import ListAnimationsTool
 from clipwright.tool.animation_batch import GenerateMGBatchTool
+from clipwright.tool.animation_validate import ValidateAnimationClipTool
+from clipwright.tool.animation_preview import PreviewAnimationClipTool
 from clipwright.tool.describe_llm_mg import DescribeLLMMGTool
 from clipwright.tool.audio import (
     AudioExtractTool,
@@ -36,6 +38,9 @@ from clipwright.tool.effects import (
 # 检测 + 专项测试）；质量类工具（静音/黑帧/字幕溢出）与 MaterialFilterTool 取
 # 本地 tool/quality.py、tool/material.py 真实实现，替代远程 stubs 占位版。
 from clipwright.tool.frame_validator import FrameValidatorTool
+from clipwright.tool.material_query import (
+    CandidateQueryTool, CandidateRerankTool, MaterialDedupeTool,
+)
 from clipwright.tool.material import MaterialFilterTool
 from clipwright.tool.quality_report import QualityReportTool
 from clipwright.tool.quality import (
@@ -65,6 +70,7 @@ from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.text_style_apply import ApplyTextStyleTool
 from clipwright.tool.video_batch import VideoTrimBatchTool
+from clipwright.tool.edl_apply import ApplyEdlTool
 from clipwright.tool.video import (
     MediaProbeTool,
     VideoConcatTool,
@@ -102,6 +108,7 @@ def register_builtin_tools() -> None:
         # ── 视频 ──
         VideoTrimTool(),
         VideoTrimBatchTool(),
+        ApplyEdlTool(),
         ImageToClipTool(),
         TimelineInsertImageTool(),
         TimelineInsertImagesTool(),
@@ -144,6 +151,9 @@ def register_builtin_tools() -> None:
         TextDiagramTool(),
         # ── 素材 ──
         MaterialFilterTool(),
+        CandidateQueryTool(),
+        CandidateRerankTool(),
+        MaterialDedupeTool(),
         FrameValidatorTool(),
         # ── 质量 ──
         BlackFrameDetectTool(),
@@ -165,6 +175,8 @@ def register_builtin_tools() -> None:
         VoiceCloneTool(),
         ListAnimationsTool(),
         GenerateMGBatchTool(),
+        ValidateAnimationClipTool(),
+        PreviewAnimationClipTool(),
         DescribeLLMMGTool(),
         WebSearchTool(),
         WebFetchTool(),

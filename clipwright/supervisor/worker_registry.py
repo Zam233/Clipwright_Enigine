@@ -36,6 +36,7 @@ SUPERVISOR_TOOLS: frozenset[str] = frozenset({
     "glob_workspace",
     "workspace_tree",
     "read_file_range",
+    "read_artifact",
 })
 
 #: 执行类工具：授予即代表该 worker 有「动手」能力 → 必须过两级审核门

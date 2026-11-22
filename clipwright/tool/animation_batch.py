@@ -7,11 +7,40 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
+from pathlib import Path
 from typing import Any
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+from clipwright.animation.mg.validator import validate_mg_json
+from clipwright.animation.mg_renderer import MGRenderer
 from clipwright.services import tool_jobs
+
+
+def _preview(mg_def: dict[str, Any], workspace_root: str, project_id: str) -> dict[str, str]:
+    if not mg_def:
+        return {}
+    try:
+        html = MGRenderer.render(mg_def)
+    except Exception:
+        return {}
+    root = Path(workspace_root) if workspace_root else None
+    if root is None and project_id:
+        try:
+            from clipwright.services.workspace import Workspace
+
+            ws = Workspace(str(project_id))
+            root = ws.dirs().root if ws.exists else None
+        except Exception:
+            root = None
+    path = ""
+    if root is not None:
+        target = root / "cache" / "animation_preview" / f"mg_{uuid.uuid4().hex[:10]}.html"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(html, encoding="utf-8")
+        path = str(target)
+    return {"path": path, "html": html[:20000]}
 
 
 class GenerateMGBatchTool(BaseTool):
@@ -41,6 +70,7 @@ class GenerateMGBatchTool(BaseTool):
                         "text_content": {"type": "string"},
                         "type_id": {"type": "string"},
                         "duration_s": {"type": "number"},
+                        "mg_def": {"type": "object"},
                         "persona_style": {"type": "object"},
                         "scene_context": {"type": "object"},
                         "width": {"type": "integer"},
@@ -51,6 +81,8 @@ class GenerateMGBatchTool(BaseTool):
             },
             "concurrency": {"type": "integer", "default": 2, "minimum": 1, "maximum": 4},
             "task_id": {"type": "string"},
+            "workspace_root": {"type": "string"},
+            "project_id": {"type": "string"},
             "pipeline_id": {"type": "string"},
         },
         "required": ["items"],
@@ -58,7 +90,8 @@ class GenerateMGBatchTool(BaseTool):
 
     async def execute(
         self, *, items: list[dict[str, Any]] | None = None,
-        concurrency: int = 2, pipeline_id: str = "", task_id: str = "", **kwargs: Any,
+        concurrency: int = 2, pipeline_id: str = "", task_id: str = "",
+        workspace_root: str = "", project_id: str = "", **kwargs: Any,
     ) -> ToolExecResult:
         rows = [x for x in (items or []) if isinstance(x, dict)]
         if not rows:
@@ -82,6 +115,23 @@ class GenerateMGBatchTool(BaseTool):
                 return {"index": index, "status": "skipped", "error": "cancelled"}
             async with sem:
                 try:
+                    supplied = row.get("mg_def")
+                    if isinstance(supplied, dict) and supplied:
+                        valid, issues = validate_mg_json(supplied)
+                        result = {"success": valid, "mg_def": supplied if valid else None,
+                                  "issues": issues, "method": "supplied",
+                                  "error": "" if valid else "; ".join(issues[:3])}
+                        ok = valid
+                        preview = _preview(supplied, workspace_root, project_id)
+                        return {
+                            "index": index, "status": "ok" if ok else "failed",
+                            "mg_def": result.get("mg_def") if ok else None,
+                            "html": preview.get("html", ""), "issues": issues,
+                            "preview_path": preview.get("path", ""),
+                            "method": "supplied",
+                            "error": "" if ok else str(result.get("error") or "")[:300],
+                            "duration_ms": int((time.monotonic() - started) * 1000),
+                        }
                     type_id = str(row.get("type_id") or "")
                     if type_id:
                         from clipwright.animation.type_specs import get_spec
@@ -120,6 +170,8 @@ class GenerateMGBatchTool(BaseTool):
                         "issues": result.get("issues") or [],
                         "motion": result.get("motion") or {},
                         "method": result.get("method", ""),
+                        "preview_path": (_preview(result.get("mg_def") or {}, workspace_root,
+                                                  project_id).get("path", "") if ok else ""),
                         "duration_s": float(row.get("duration_s") or 0) or None,
                         "error": "" if ok else str(result.get("error") or "MG generation failed")[:300],
                         "duration_ms": int((time.monotonic() - started) * 1000),

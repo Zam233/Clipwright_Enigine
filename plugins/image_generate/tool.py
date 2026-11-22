@@ -194,6 +194,8 @@ class ImageGenerateBatchTool(BaseTool):
             "source_id": {"type": "string", "description": "图像源 id（不填用 image 角色绑定）"},
             "seed": {"type": "integer", "description": "随机种子（可选）"},
             "concurrency": {"type": "integer", "default": 2, "description": "并发数（1-4）"},
+            "insert": {"type": "boolean", "default": False,
+                       "description": "生成后是否批量插入当前任务时间线（需 task_id）"},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
             "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
             "task_id": {"type": "string", "description": "任务 id（宿主自动注入）"},
@@ -220,6 +222,7 @@ class ImageGenerateBatchTool(BaseTool):
         source_id: str = "",
         seed: int | None = None,
         concurrency: int = 2,
+        insert: bool = False,
         task_id: str = "",
         project_id: str = "",
         workspace_root: str = "",
@@ -291,4 +294,19 @@ class ImageGenerateBatchTool(BaseTool):
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="所有 prompt 均生成失败", output=output,
             )
+        if insert and task_id:
+            try:
+                from clipwright.tool.registry import ToolRegistry
+
+                refs = [x.get("rel_path") for x in items
+                        if x.get("ok") and x.get("rel_path")]
+                inserted = await ToolRegistry.execute(
+                    "timeline_insert_images", task_id=task_id,
+                    items=[{"asset_ref": p} for p in refs],
+                )
+                output["insert"] = getattr(inserted, "output", None) or {}
+            except Exception as exc:  # noqa: BLE001 — 插入失败不回滚图片
+                output["insert_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        elif insert:
+            output["insert_error"] = "insert=true 但缺少 task_id"
         return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name, output=output)

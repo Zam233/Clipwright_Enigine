@@ -115,7 +115,7 @@ def emit_progress(task_id: str, job: ToolJob, *, message: str = "") -> None:
         from clipwright.services import task_events
 
         task_events.emit(
-            str(task_id), "narration",
+            str(task_id), "subagent_progress",
             message or f"{job.kind} 进度 {job.completed + job.failed}/{job.total}",
             {"kind": "tool_job_progress", "job_id": job.job_id, "tool": job.kind,
              "status": job.status, "total": job.total,
