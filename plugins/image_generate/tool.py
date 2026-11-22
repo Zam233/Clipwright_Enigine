@@ -105,7 +105,6 @@ class ImageGenerateTool(BaseTool):
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="未找到工作区（需要 project_id 或 workspace_root 之一，且目录存在）",
             )
-
         service = ImageGenerationService(root)
         if dry_run:
             try:
@@ -161,6 +160,7 @@ class ImageGenerateTool(BaseTool):
 
 
 _BG_TASKS: dict[str, Any] = {}
+_BATCH_CACHE: dict[str, dict[str, Any]] = {}
 
 
 class ImageGenerateBatchTool(BaseTool):
@@ -196,6 +196,7 @@ class ImageGenerateBatchTool(BaseTool):
             "concurrency": {"type": "integer", "default": 2, "description": "并发数（1-4）"},
             "async_mode": {"type": "boolean", "default": False,
                            "description": "立即返回 job_id，后台生成；用 /api/tool/jobs 轮询"},
+            "idempotency_key": {"type": "string"},
             "insert": {"type": "boolean", "default": False,
                        "description": "生成后是否批量插入当前任务时间线（需 task_id）"},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
@@ -225,6 +226,7 @@ class ImageGenerateBatchTool(BaseTool):
         seed: int | None = None,
         concurrency: int = 2,
         insert: bool = False,
+        idempotency_key: str = "",
         async_mode: bool = False,
         task_id: str = "",
         project_id: str = "",
@@ -270,6 +272,9 @@ class ImageGenerateBatchTool(BaseTool):
                 output={"job_id": job.job_id, "status": "running",
                         "total": len(clean), "async": True},
             )
+        if idempotency_key and idempotency_key in _BATCH_CACHE:
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output=dict(_BATCH_CACHE[idempotency_key]))
         service = ImageGenerationService(root)
         job = tool_jobs.get_job(_job_id) if _job_id else None
         if job is None:
@@ -333,4 +338,6 @@ class ImageGenerateBatchTool(BaseTool):
                 output["insert_error"] = f"{type(exc).__name__}: {exc}"[:300]
         elif insert:
             output["insert_error"] = "insert=true 但缺少 task_id"
+        if idempotency_key:
+            _BATCH_CACHE[idempotency_key] = dict(output)
         return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name, output=output)

@@ -16,6 +16,8 @@ from clipwright.schema.timeline import Timeline
 from clipwright.services import task_blackboard as bb
 from clipwright.services import tool_jobs
 from clipwright.tool.batch_contract import attach_batch_contract
+
+_BATCH_CACHE: dict[str, dict] = {}
 from clipwright.services.intent_apply import (
     PatchOp,
     PatchPlan,
@@ -124,6 +126,7 @@ class TimelineInsertImageTool(BaseTool):
         "type": "object",
         "properties": {
             "task_id": {"type": "string", "description": "当前任务 id（时间线在黑板里）"},
+            "idempotency_key": {"type": "string"},
             "asset_ref": {"type": "string", "description": "工作区相对路径，如 materials/image/abc.png"},
             "position": {"type": "string", "default": "end",
                          "description": "start / end / after:<clip_id>"},
@@ -281,7 +284,8 @@ class TimelineInsertImagesTool(BaseTool):
 
     async def execute(
         self, *, task_id: str = "", items: list[dict] | None = None,
-        project_id: str = "", workspace_root: str = "", dry_run: bool = False, **kwargs,
+        project_id: str = "", workspace_root: str = "", dry_run: bool = False,
+        idempotency_key: str = "", **kwargs,
     ) -> ToolExecResult:
         tid = str(task_id or "").strip()
         if not tid:
@@ -294,6 +298,9 @@ class TimelineInsertImagesTool(BaseTool):
         if len(rows) > 50:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error=f"items 最多 50 项（收到 {len(rows)}）")
+        if idempotency_key and idempotency_key in _BATCH_CACHE:
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output=dict(_BATCH_CACHE[idempotency_key]))
         job = tool_jobs.create("timeline_insert_images", len(rows))
         root = _resolve_root(project_id, workspace_root)
         try:
@@ -372,11 +379,13 @@ class TimelineInsertImagesTool(BaseTool):
             if pos < len(added):
                 item["clip_id"] = str(added[pos])
         tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
+        output = attach_batch_contract({"job_id": job.job_id, "items": results,
+                "added_clip_ids": added, "clips_before": report.clips_before,
+                "clips_after": report.clips_after,
+                "warnings": [p.model_dump() for p in report.problems
+                             if p.level == "warning"]}, job_id=job.job_id)
+        if idempotency_key:
+            _BATCH_CACHE[idempotency_key] = dict(output)
         return ToolExecResult(
-            status=ToolStatus.SUCCESS, tool_name=self.name,
-            output=attach_batch_contract({"job_id": job.job_id, "items": results,
-                    "added_clip_ids": added, "clips_before": report.clips_before,
-                    "clips_after": report.clips_after,
-                    "warnings": [p.model_dump() for p in report.problems
-                                 if p.level == "warning"]}, job_id=job.job_id),
+            status=ToolStatus.SUCCESS, tool_name=self.name, output=output,
         )

@@ -18,6 +18,8 @@ from clipwright.animation.mg_renderer import MGRenderer
 from clipwright.services import tool_jobs
 from clipwright.tool.batch_contract import attach_batch_contract
 
+_BATCH_CACHE: dict[str, dict[str, Any]] = {}
+
 
 def _preview(mg_def: dict[str, Any], workspace_root: str, project_id: str) -> dict[str, str]:
     if not mg_def:
@@ -82,6 +84,7 @@ class GenerateMGBatchTool(BaseTool):
             },
             "concurrency": {"type": "integer", "default": 2, "minimum": 1, "maximum": 4},
             "task_id": {"type": "string"},
+            "idempotency_key": {"type": "string"},
             "workspace_root": {"type": "string"},
             "project_id": {"type": "string"},
             "pipeline_id": {"type": "string"},
@@ -92,8 +95,11 @@ class GenerateMGBatchTool(BaseTool):
     async def execute(
         self, *, items: list[dict[str, Any]] | None = None,
         concurrency: int = 2, pipeline_id: str = "", task_id: str = "",
-        workspace_root: str = "", project_id: str = "", **kwargs: Any,
+        idempotency_key: str = "", workspace_root: str = "", project_id: str = "", **kwargs: Any,
     ) -> ToolExecResult:
+        if idempotency_key and idempotency_key in _BATCH_CACHE:
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output=dict(_BATCH_CACHE[idempotency_key]))
         rows = [x for x in (items or []) if isinstance(x, dict)]
         if not rows:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
@@ -212,6 +218,8 @@ class GenerateMGBatchTool(BaseTool):
                 "items": results,
                 "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
             }, job_id=job.job_id)
+        if idempotency_key:
+            _BATCH_CACHE[idempotency_key] = dict(output)
         return ToolExecResult(
             status=ToolStatus.SUCCESS if ok_count else ToolStatus.ERROR,
             tool_name=self.name,
