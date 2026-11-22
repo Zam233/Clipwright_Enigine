@@ -1260,7 +1260,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             units = 0
             clip_index = 0
             source_use_count: dict[str, float] = {}
-            while remaining > 1.0 and units < max_units:
+            while (remaining > 1.0 and units < max_units):
                 asset = assets[clip_index % len(assets)]
                 clip_index += 1
                 source = str(asset.get("local_path") or asset.get("url") or "")
