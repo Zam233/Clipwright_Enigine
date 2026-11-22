@@ -54,6 +54,9 @@ from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
 from clipwright.tool.stubs import VisionLLMTool
 from clipwright.tool.timeline_view import TimelineViewTool
+from clipwright.tool.timeline_probe import TimelineProbeTool
+from clipwright.tool.scene_analysis import SceneBudgetCheckTool, ScriptSceneDiffTool
+from clipwright.tool.audio_inspect import AudioTimelineProbeTool, MixReportTool
 from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
@@ -168,6 +171,11 @@ def register_builtin_tools() -> None:
         TransitionApplyTool(),
         WhisperTranscribeTool(),
         TimelineViewTool(),
+        TimelineProbeTool(),
+        SceneBudgetCheckTool(),
+        ScriptSceneDiffTool(),
+        AudioTimelineProbeTool(),
+        MixReportTool(),
         ProjectMemoryTool(),
         EventSpotTool(),
         ContentQueryTool(),
