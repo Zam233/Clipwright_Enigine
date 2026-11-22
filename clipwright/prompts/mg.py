@@ -10,5 +10,6 @@ MG_ORCHESTRATION_CONSTRAINTS = '\n\n## 动画编排约束\n- 顺序揭示（sequ
 
 MG_BATCH_CONTRACT = (
     "MG 批量生成统一用 generate_mg_batch；每项返回 mg_def/issues/preview_path。 "
-    "生成前 validate_animation_clip，挂时间线前 preview_animation_clip；失败项不拖垮整批。"
+    "生成前 validate_animation_clip，挂时间线前 preview_animation_clip；"
+    "预览返回 grid_path 后可用 read_image(path=grid_path) 让视觉模型看网格；失败项不拖垮整批。"
 )
