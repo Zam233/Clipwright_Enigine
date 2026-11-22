@@ -39,6 +39,8 @@ class GenerateMGBatchTool(BaseTool):
                     "properties": {
                         "description": {"type": "string"},
                         "text_content": {"type": "string"},
+                        "type_id": {"type": "string"},
+                        "duration_s": {"type": "number"},
                         "persona_style": {"type": "object"},
                         "scene_context": {"type": "object"},
                         "width": {"type": "integer"},
@@ -80,21 +82,45 @@ class GenerateMGBatchTool(BaseTool):
                 return {"index": index, "status": "skipped", "error": "cancelled"}
             async with sem:
                 try:
-                    result = await gen.generate(
-                        description=str(row.get("description") or ""),
-                        text_content=str(row.get("text_content") or ""),
-                        persona_style=dict(row.get("persona_style") or {}),
-                        scene_context=dict(row.get("scene_context") or {}),
-                        pipeline_id=pipeline_id or None,
-                        width=int(row["width"]) if row.get("width") else None,
-                        height=int(row["height"]) if row.get("height") else None,
-                    )
-                    ok = bool(result.get("success", True)) and bool(result.get("mg_def"))
+                    type_id = str(row.get("type_id") or "")
+                    if type_id:
+                        from clipwright.animation.type_specs import get_spec
+
+                        spec = get_spec(type_id)
+                        if spec is None:
+                            raise ValueError(f"未注册的动画类型: {type_id}")
+                        typed = await gen.generate_for_type(
+                            spec=spec,
+                            content=str(row.get("text_content") or ""),
+                            duration_s=float(row.get("duration_s") or 4.0),
+                            persona_style=dict(row.get("persona_style") or {}),
+                            scene_context=dict(row.get("scene_context") or {}),
+                            width=int(row["width"]) if row.get("width") else None,
+                            height=int(row["height"]) if row.get("height") else None,
+                            pipeline_id=pipeline_id or None,
+                        )
+                        result = typed.to_dict()
+                        ok = bool(result.get("ok")) and bool(result.get("mg_def"))
+                    else:
+                        result = await gen.generate(
+                            description=str(row.get("description") or ""),
+                            text_content=str(row.get("text_content") or ""),
+                            persona_style=dict(row.get("persona_style") or {}),
+                            scene_context=dict(row.get("scene_context") or {}),
+                            pipeline_id=pipeline_id or None,
+                            width=int(row["width"]) if row.get("width") else None,
+                            height=int(row["height"]) if row.get("height") else None,
+                        )
+                        ok = bool(result.get("success", True)) and bool(result.get("mg_def"))
                     return {
                         "index": index,
                         "status": "ok" if ok else "failed",
                         "mg_def": result.get("mg_def") if ok else None,
+                        "html": result.get("html", ""),
+                        "issues": result.get("issues") or [],
+                        "motion": result.get("motion") or {},
                         "method": result.get("method", ""),
+                        "duration_s": float(row.get("duration_s") or 0) or None,
                         "error": "" if ok else str(result.get("error") or "MG generation failed")[:300],
                         "duration_ms": int((time.monotonic() - started) * 1000),
                     }

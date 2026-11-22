@@ -32,3 +32,29 @@ def test_prefetch_mg_dynamic_caches_result(monkeypatch) -> None:
     asyncio.run(agent._prefetch_mg_dynamic([job], SimpleNamespace(pipeline_id="p")))
     assert calls and calls[0]["name"] == "generate_mg_batch"
     assert agent._mg_batch_cache["c1"]["mg_def"] == {"elements": []}
+
+
+def test_prefetch_typed_mg_caches_result() -> None:
+    from clipwright.animation.type_specs import all_specs
+
+    agent = AnimationAgent.__new__(AnimationAgent)
+    agent._mg_typed_cache = {}
+    agent._tl_width, agent._tl_height = 1920, 1080
+    agent._typed_generation_enabled = lambda: True  # type: ignore[method-assign]
+    type_id = all_specs()[0].id
+    calls: list[dict] = []
+
+    async def fake_call(name, **kwargs):
+        calls.append({"name": name, **kwargs})
+        return SimpleNamespace(status="success", output={"items": [{
+            "index": 0, "status": "ok", "mg_def": {"elements": []},
+            "html": "<div/>", "issues": [], "motion": {}, "duration_s": 3,
+            "method": "typed-batch",
+        }]})
+
+    agent.call_tool = fake_call  # type: ignore[method-assign]
+    clip = SimpleNamespace(id="c2", text="A", duration_sec=3.0, metadata={"title": "s"})
+    job = (None, clip, type_id, "类型", {"text": "A"}, {})
+    asyncio.run(agent._prefetch_typed_mg([job], SimpleNamespace(pipeline_id="p")))
+    assert calls and calls[0]["items"][0]["type_id"] == type_id
+    assert agent._mg_typed_cache["c2"]["mg_def"] == {"elements": []}

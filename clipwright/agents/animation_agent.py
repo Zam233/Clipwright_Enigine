@@ -686,6 +686,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 未配置则回落到 pipeline_concurrency（保持旧行为）。
             if logic_jobs:
                 await self._prefetch_mg_dynamic(logic_jobs, context)
+                await self._prefetch_typed_mg(logic_jobs, context)
                 _conc = (getattr(settings, "animation_llm_concurrency", None)
                          or getattr(settings, "pipeline_concurrency", 3))
                 sem = asyncio.Semaphore(max(1, int(_conc)))
@@ -1576,6 +1577,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if spec is None:
             logger.warning("AnimationAgent: 未注册的动画类型 %s，回退", anim_id)
             return False
+        prefetched_typed = getattr(self, "_mg_typed_cache", {}).pop(
+            str(getattr(vid_clip, "id", "") or ""), None)
+        if prefetched_typed and prefetched_typed.get("mg_def"):
+            if self._apply_cached_typed(
+                anim_track, vid_clip, anim_name, spec, text_content, prefetched_typed,
+            ):
+                return True
 
         # 同片去重：同类型同内容只播一次（用户要求「同片不重复播」）。
         # 逻辑动画是并发执行的，check-and-set 必须串行化，否则同内容会被并发生成两次。
@@ -2097,6 +2105,69 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
         return {}
+
+    async def _prefetch_typed_mg(self, logic_jobs: list[Any], context: Any) -> None:
+        """对类型化逻辑动画做一次批量预生成，结果按 clip_id 缓存。"""
+        if not self._typed_generation_enabled():
+            return
+        cache = getattr(self, "_mg_typed_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._mg_typed_cache = cache
+        items: list[dict[str, Any]] = []
+        clip_ids: list[str] = []
+        for _track, c, aid, _aname, marker, style in logic_jobs:
+            if str(aid) == "mg_dynamic":
+                continue
+            spec_id = str(aid)
+            from clipwright.animation.type_specs import get_spec
+
+            if get_spec(spec_id) is None:
+                continue
+            cid = str(getattr(c, "id", "") or "")
+            if not cid:
+                continue
+            text = self._strip_json_payload(
+                marker.get("text", self._extract_text_content(c, marker)) if isinstance(marker, dict) else "")
+            if not text:
+                text = "逻辑关系"
+            meta = c.metadata or {}
+            items.append({
+                "type_id": spec_id,
+                "text_content": text,
+                "duration_s": min(float(c.duration_sec or 4.0), 6.0),
+                "persona_style": style or {},
+                "scene_context": {
+                    "clip_id": cid, "title": meta.get("title", ""),
+                    "keywords": meta.get("keywords", []),
+                    "description": meta.get("description", ""),
+                },
+                "width": self._tl_width, "height": self._tl_height,
+            })
+            clip_ids.append(cid)
+            if len(items) >= 12:
+                break
+        if not items:
+            return
+        try:
+            result = await self.call_tool("generate_mg_batch", items=items, concurrency=2)
+        except Exception as exc:  # noqa: BLE001 — 批量不可用走原路径
+            logger.debug("AnimationAgent: typed generate_mg_batch 不可用: %s", exc)
+            return
+        if str(getattr(result, "status", "")) not in ("success", "ok"):
+            return
+        out = getattr(result, "output", None) or {}
+        for row, cid in zip(out.get("items") or [], clip_ids):
+            if row.get("status") != "ok" or not row.get("mg_def"):
+                continue
+            cache[cid] = {
+                "mg_def": row["mg_def"], "html": row.get("html", ""),
+                "issues": row.get("issues") or [], "motion": row.get("motion") or {},
+                "duration_s": row.get("duration_s"), "method": row.get("method") or "batch",
+            }
+        if cache:
+            add_event(context.pipeline_id, "animation", "mg_batch_prefetch",
+                      f"typed MG 批量预生成 {len(cache)} 段")
 
     async def _prefetch_mg_dynamic(self, logic_jobs: list[Any], context: Any) -> None:
         """对 mg_dynamic 作业做一次批量预生成，结果按 clip_id 缓存。
