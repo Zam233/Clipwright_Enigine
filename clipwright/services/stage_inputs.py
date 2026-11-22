@@ -74,6 +74,13 @@ def preflight(stage: str, *, task: Any, board: dict[str, Any] | None = None,
     R7：把 `glow_color` 之类的 Pydantic 错误挡在 `delegate_agent` 之前，
     避免整段阶段白跑后才在写时间线时失败。
     """
+    if stage not in REQUIRED_KEYS:
+        # 未知阶段交给阶段 Adapter 的既有 needs 语义，不要在预检层改判为字段错误
+        return [{
+            "field": "stage", "category": "input_insufficient",
+            "message": f"未知阶段: {stage}",
+            "suggestion": "检查 delegate_agent 的 stage 是否拼写正确",
+        }]
     try:
         assemble(stage, task=task, board=board or {}, override=inputs or {})
         return []
