@@ -205,6 +205,18 @@ async def get_task(task_id: str, request: Request) -> dict:
     return {"task": task.to_public(), "events": len(events(task_id))}
 
 
+@router.get("/{task_id}/review")
+async def review_task(task_id: str, request: Request) -> dict:
+    """终态任务只读复盘快照（不 resume、不派发、不写黑板）。"""
+    _enforce_task_owner(request, task_id)
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    from clipwright.services.agent_review import build_review
+
+    return build_review(task)
+
+
 @router.get("/{task_id}/events")
 async def get_task_events(
     task_id: str,
