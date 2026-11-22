@@ -535,6 +535,8 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/tool/list` | 列出所有 Tool |
 | `POST /api/tool/execute` | 执行 Tool |
 | `POST /api/tool/batch` | 批量执行 |
+| `GET /api/tool/jobs` | 通用 batch job 状态（有界、只读） |
+| `GET /api/tool/jobs/{job_id}` | 单个 batch job 状态 |
 | `POST /api/capability/{name}` | **通用能力网关**（插件对外 HTTP 入口的唯一通道）：按**能力名**解析（`capabilities.resolve_name`，能力名优先、工具名兜底）再执行，body `{params}`，返回 `ToolExecResult`。状态码语义：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径不合规、`503` 已解析但依赖缺失、`200` 成功；`costly`/`dangerous` 档记审计。**网关内没有任何具体 provider/能力名分支** |
 | `GET /api/skill/list` | 列出所有 Skill |
 | `POST /api/skill/execute` | 执行 Skill |

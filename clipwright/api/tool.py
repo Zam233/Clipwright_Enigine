@@ -40,6 +40,24 @@ def _validate_tool_params(params: dict[str, Any], *, status_code: int = 400) -> 
             raise HTTPException(status_code=status_code, detail=f"参数 {key} 不在白名单目录: {e}") from e
 
 
+@router.get("/jobs")
+async def list_tool_jobs(limit: int = 50) -> dict:
+    """通用 batch job 状态（只读）。"""
+    from clipwright.services import tool_jobs
+
+    return {"items": tool_jobs.list_jobs(limit=limit)}
+
+
+@router.get("/jobs/{job_id}")
+async def get_tool_job(job_id: str) -> dict:
+    from clipwright.services import tool_jobs
+
+    job = tool_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job 不存在: {job_id}")
+    return job
+
+
 @router.get("/list", response_model=list[ToolInfo])
 async def list_tools() -> list[ToolInfo]:
     """列出所有已注册的原子能力工具及其可用状态。"""
