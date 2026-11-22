@@ -35,3 +35,21 @@ def test_generate_mg_batch_partial_failure(monkeypatch) -> None:
     assert out.output["items"][0]["mg_def"]["description"] == "good"
     assert out.output["items"][1]["status"] == "failed"
     assert fake.calls == 2
+
+
+def test_generate_mg_batch_prevalidates_supplied_mg(tmp_path) -> None:
+    tool = GenerateMGBatchTool()
+    mg = {"animation_id": "a", "duration_sec": 2, "width": 1920, "height": 1080,
+          "elements": [{"type": "text", "content": "A", "x": "center", "y": "center",
+                        "font_size": 80, "font_color": "#fff",
+                        "keyframes": [{"time": 0, "opacity": 0},
+                                      {"time": 0.5, "opacity": 1}]}]}
+    out = asyncio.run(tool.execute(
+        items=[{"mg_def": mg}], workspace_root=str(tmp_path),
+    ))
+    assert out.output["items"][0]["status"] == "ok"
+    assert out.output["items"][0]["preview_path"]
+    bad = dict(mg); bad["elements"] = [{"type": "text", "content": "A",
+                                        "font_color": ""}]
+    out2 = asyncio.run(tool.execute(items=[{"mg_def": bad}]))
+    assert out2.output["items"][0]["status"] == "failed"

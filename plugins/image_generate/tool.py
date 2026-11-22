@@ -6,6 +6,7 @@ PRD（image-provider-plugin §8 第二期）：Engine 负责选源、能力校�
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from clipwright.config import logger
@@ -93,6 +94,7 @@ class ImageGenerateTool(BaseTool):
         project_id: str = "",
         workspace_root: str = "",
         dry_run: bool = False,
+        _job_id: str = "",
         **kwargs,
     ) -> ToolExecResult:
         root = _resolve_root(project_id, workspace_root)
@@ -146,13 +148,6 @@ class ImageGenerateTool(BaseTool):
             logger.warning("工作区素材源注册失败: %s", exc)
 
         note = "产物已在 materials/image/；插入时间线请用 timeline_insert_image"
-        try:
-            from clipwright.services.generated_assets import legacy_image_history_present
-
-            if legacy_image_history_present():
-                note += "（检测到旧版 AI 生成历史：只读保留、未迁移）"
-        except Exception:  # noqa: BLE001 — 提示失败不影响结果
-            pass
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
             output={
@@ -161,6 +156,9 @@ class ImageGenerateTool(BaseTool):
                 "note": note,
             },
         )
+
+
+_BG_TASKS: dict[str, Any] = {}
 
 
 class ImageGenerateBatchTool(BaseTool):
@@ -194,6 +192,8 @@ class ImageGenerateBatchTool(BaseTool):
             "source_id": {"type": "string", "description": "图像源 id（不填用 image 角色绑定）"},
             "seed": {"type": "integer", "description": "随机种子（可选）"},
             "concurrency": {"type": "integer", "default": 2, "description": "并发数（1-4）"},
+            "async_mode": {"type": "boolean", "default": False,
+                           "description": "立即返回 job_id，后台生成；用 /api/tool/jobs 轮询"},
             "insert": {"type": "boolean", "default": False,
                        "description": "生成后是否批量插入当前任务时间线（需 task_id）"},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
@@ -223,10 +223,12 @@ class ImageGenerateBatchTool(BaseTool):
         seed: int | None = None,
         concurrency: int = 2,
         insert: bool = False,
+        async_mode: bool = False,
         task_id: str = "",
         project_id: str = "",
         workspace_root: str = "",
         dry_run: bool = False,
+        _job_id: str = "",
         **kwargs,
     ) -> ToolExecResult:
         if dry_run:
@@ -252,8 +254,24 @@ class ImageGenerateBatchTool(BaseTool):
                 error=f"prompts 最多 20 项（收到 {len(clean)}）",
             )
 
+        if async_mode and not _job_id:
+            job = tool_jobs.create("image_generate_batch", len(clean))
+            task = asyncio.create_task(self.execute(
+                prompts=clean, size=size, n=n, model=model, source_id=source_id,
+                seed=seed, concurrency=concurrency, insert=insert,
+                task_id=task_id, project_id=project_id,
+                workspace_root=str(root), _job_id=job.job_id,
+            ))
+            _BG_TASKS[job.job_id] = task
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name=self.name,
+                output={"job_id": job.job_id, "status": "running",
+                        "total": len(clean), "async": True},
+            )
         service = ImageGenerationService(root)
-        job = tool_jobs.create("image_generate_batch", len(clean))
+        job = tool_jobs.get_job(_job_id) if _job_id else None
+        if job is None:
+            job = tool_jobs.create("image_generate_batch", len(clean))
         heartbeat = tool_jobs.start_heartbeat(task_id, job)
         try:
             outcomes = await service.generate_many(

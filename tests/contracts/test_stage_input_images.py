@@ -9,7 +9,7 @@ import pytest
 from clipwright.schema.agent import AgentContext
 from clipwright.schema.timeline import Timeline
 from clipwright.services import stage_inputs
-from clipwright.services.generated_assets import generated_image_entries
+from clipwright.services.workspace_materials import workspace_image_entries
 
 
 def _task(tmp_path):
@@ -55,11 +55,11 @@ def test_generated_image_entries_reads_workspace(tmp_path) -> None:
     image_dir.mkdir(parents=True)
     image = image_dir / "launcher_ui.png"
     image.write_bytes(b"png")
-    entries = generated_image_entries(tmp_path)
+    entries = workspace_image_entries(tmp_path)
     assert entries
     assert entries[0]["path"].endswith(image.name)
     assert entries[0]["asset_id"] == "launcher_ui"
 
 
 def test_generated_image_entries_without_workspace_is_empty(tmp_path) -> None:
-    assert generated_image_entries(tmp_path) == []
+    assert workspace_image_entries(tmp_path) == []

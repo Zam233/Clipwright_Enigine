@@ -100,6 +100,10 @@ def get(job_id: str) -> dict[str, Any] | None:
     return job.as_dict() if job else None
 
 
+def get_job(job_id: str) -> ToolJob | None:
+    return _JOBS.get(str(job_id))
+
+
 def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     return [j.as_dict() for j in reversed(list(_JOBS.values()))][: max(1, int(limit or 50))]
 

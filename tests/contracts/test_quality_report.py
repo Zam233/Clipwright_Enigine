@@ -22,3 +22,19 @@ def test_quality_report_missing(tmp_path) -> None:
     out = asyncio.run(QualityReportTool().execute(workspace_root=str(tmp_path)))
     assert str(out.status) == "not_found"
     assert "quality" in out.error
+
+
+def test_quality_report_reads_blackboard_issues() -> None:
+    from clipwright.services import task_blackboard as bb
+
+    tid = "task_qreport_board"
+    bb.reset(tid)
+    bb.put(tid, "issues", [{"severity": "warning", "category": "audio",
+                            "message": "没有音频轨"}])
+    try:
+        out = asyncio.run(QualityReportTool().execute(task_id=tid))
+        assert out.output["source"] == "blackboard"
+        assert out.output["passed"] is False
+        assert out.output["issues"]
+    finally:
+        bb.reset(tid)

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 
 import pytest
@@ -245,3 +247,29 @@ async def test_image_generate_batch_partial_failure(monkeypatch, tmp_path):
     assert str(out.status) == "success"
     assert out.output["summary"] == {"total": 2, "ok": 1, "failed": 1}
     assert out.output["items"][1]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_image_generate_batch_async_mode(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from plugins.image_generate import tool as tool_mod
+
+    class FakeService:
+        def __init__(self, _root):
+            self.root = _root
+
+        async def generate_many(self, *, prompts, **_kwargs):
+            return [SimpleNamespace(ok=True, rel_path=f"materials/image/{p}.png",
+                                    as_dict=lambda p=p: {"ok": True,
+                                                         "rel_path": f"materials/image/{p}.png"})
+                    for p in prompts]
+
+    monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
+    out = await tool_mod.ImageGenerateBatchTool().execute(
+        prompts=["a"], workspace_root=str(tmp_path), async_mode=True,
+    )
+    assert out.output["status"] == "running" and out.output["job_id"]
+    await asyncio.sleep(0.05)
+    job = __import__("clipwright.services.tool_jobs", fromlist=["tool_jobs"]).get(out.output["job_id"])
+    assert job is not None and job["status"] == "done"
+

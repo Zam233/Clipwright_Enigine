@@ -292,14 +292,14 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
     # 能看到新图、edit/material 看不到（2026-11-22 实机）。
     _image_assets: list[dict[str, Any]] = []
     try:
-        from clipwright.services.generated_assets import generated_image_entries
+        from clipwright.services.workspace_materials import workspace_image_entries
 
         _explicit_images = data.get("image_assets")
         if isinstance(_explicit_images, list) and _explicit_images:
             _image_assets = [x for x in _explicit_images if isinstance(x, dict)]
         else:
             _workspace_root = str((extra or {}).get("workspace_root") or "")
-            _image_assets = generated_image_entries(_workspace_root)
+            _image_assets = workspace_image_entries(_workspace_root)
     except Exception as exc:  # noqa: BLE001 — 图片索引失败不能阻断阶段
         logger.warning("阶段输入：装配 image_assets 失败（按空处理）: %s", exc)
     if isinstance(getattr(ctx, "extra_params", None), dict):
