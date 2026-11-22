@@ -16,3 +16,9 @@ LOOP_BUDGET_TIGHT = ("收尾优先级升高：产物齐了就先收尾；"
 
 LOOP_BUDGET_CRITICAL = ("**必须立即收尾**：先用 acknowledge_degradation 写收据"
                         "（或说明为何无需），然后直接 finish；不要再调任何查询类工具。")
+
+
+# material 阶段的工具工效提示：主 Agent 派发前也能看到（常量来自 material prompt）。
+from clipwright.prompts.material import MATERIAL_VISION_BATCH_GUIDE  # noqa: E402
+
+LOOP_NORMAL_SYSTEM += "\n- " + MATERIAL_VISION_BATCH_GUIDE
