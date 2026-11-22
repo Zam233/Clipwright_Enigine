@@ -215,7 +215,8 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         f"你的角色：{spec.role}\n"
         f"{spec.system_prompt}\n\n"
         f"当前任务工作区：{spec.workspace_root or '（未绑定）'}\n"
-        "读取文件可使用工作区相对路径（例如 reports/xxx.md、artifacts/xxx.json）。\n\n"
+        "读取文件可使用工作区相对路径（例如 reports/xxx.md、artifacts/xxx.json）；"
+        "定位文件优先用 glob_workspace / workspace_tree / grep_workspace / read_file_range。\n\n"
         "请完成本次任务并输出结论。只输出结论正文，不要寒暄。"
     )
     started = time.monotonic()

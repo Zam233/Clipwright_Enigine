@@ -118,3 +118,19 @@ def test_worker_grep_workspace(tmp_path, monkeypatch) -> None:
     out = asyncio.run(ex("grep_workspace", {"pattern": "目标证据", "path": "reports"}))
     assert out.get("count") == 1
     assert out["items"][0]["line"] == 2
+
+
+def test_worker_glob_and_range(tmp_path, monkeypatch) -> None:
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "a.md").write_text("0123456789", encoding="utf-8")
+    import clipwright.security as security
+
+    monkeypatch.setattr(security, "allowed_media_roots", lambda: [tmp_path])
+    ex = build_executor(
+        "p_ws", "sa", allowed=("glob_workspace", "read_file_range"),
+        workspace_root=str(tmp_path), project_id="p",
+    )
+    glob = asyncio.run(ex("glob_workspace", {"pattern": "reports/*.md"}))
+    assert glob["count"] == 1
+    part = asyncio.run(ex("read_file_range", {"path": "reports/a.md", "offset": 2, "length": 4}))
+    assert part["content"] == "2345"

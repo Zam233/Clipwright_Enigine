@@ -26,7 +26,8 @@ from clipwright.services import run_store
 #: 否则"子 agent 能不能开 shell"就没人管了。
 READONLY_TOOLS: frozenset[str] = frozenset({
     # PRD §17.5.2：子 agent 不得写文件（报告由 runtime 落盘）
-    "read_file", "list_dir", "grep_workspace", "list_subagents", "get_subagent_status",
+    "read_file", "list_dir", "grep_workspace", "glob_workspace", "workspace_tree",
+    "read_file_range", "list_subagents", "get_subagent_status",
     "web_search", "web_fetch",
 })
 EXEC_TOOLS: frozenset[str] = frozenset({"run_shell", "run_python"})

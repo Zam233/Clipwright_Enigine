@@ -88,6 +88,52 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "glob_workspace": {
+        "type": "function",
+        "function": {
+            "name": "glob_workspace",
+            "description": "在工作区按 glob 模式查找文件（如 reports/**/*.md）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    "workspace_tree": {
+        "type": "function",
+        "function": {
+            "name": "workspace_tree",
+            "description": "列出工作区目录树（有界深度/条目）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "depth": {"type": "integer"},
+                    "pattern": {"type": "string"},
+                    "max_entries": {"type": "integer"},
+                },
+            },
+        },
+    },
+    "read_file_range": {
+        "type": "function",
+        "function": {
+            "name": "read_file_range",
+            "description": "分段读取工作区文本文件（offset/length 字节）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "length": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
     "grep_workspace": {
         "type": "function",
         "function": {
@@ -343,6 +389,26 @@ async def _dispatch_inner(
                 str(args.get("path", "")),
                 workspace_root=workspace_root, project_id=project_id,
             )
+        if tool == "glob_workspace":
+            return _delegate("glob_workspace", {
+                "pattern": str(args.get("pattern", "")),
+                "max_results": int(args.get("max_results") or 100),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
+        if tool == "workspace_tree":
+            return _delegate("workspace_tree", {
+                "depth": int(args.get("depth") or 2),
+                "pattern": str(args.get("pattern", "") or ""),
+                "max_entries": int(args.get("max_entries") or 200),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
+        if tool == "read_file_range":
+            return _delegate("read_file_range", {
+                "path": str(args.get("path", "")),
+                "offset": int(args.get("offset") or 0),
+                "length": int(args.get("length") or 4000),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
         if tool == "grep_workspace":
             return _delegate("grep_workspace", {
                 "pattern": str(args.get("pattern", "")),
