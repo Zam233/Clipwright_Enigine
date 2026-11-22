@@ -357,6 +357,23 @@ async def resume_task(task_id: str, request: Request) -> dict:
                 "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
             },
         )
+    if task.status == "waiting_user":
+        from clipwright.services import ask_user
+
+        pending = ask_user.pending("task", task_id)
+        if pending:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "waiting_answer",
+                    "question_id": pending[0].get("question_id", ""),
+                    "message": "任务正在等待用户回答，不能 resume；请先回答或取消",
+                },
+            )
+        # 重启后内存里没有待答问题 → 降级为 paused，允许继续
+        task.status = "paused"
+        if hasattr(task, "touch"):
+            task.touch()
     _schedule(task_id)
     return {"task_id": task_id, "status": "running", "resumed": True}
 

@@ -12,5 +12,3 @@ class TextEffectCardPlugin(BasePlugin):
     def contributions(self):
         return [Contribution(ContributionKind.TOOL, "text_effect_card", TextEffectCardTool())]
 
-    def initialize(self):
-        return None

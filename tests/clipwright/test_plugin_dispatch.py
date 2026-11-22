@@ -128,6 +128,10 @@ class TestDispatchRoundTrip:
             ContributionKind.ANIMATION, ContributionKind.STYLE_INTERPRETER,
             ContributionKind.HOOK, ContributionKind.PROMPT,
             ContributionKind.CLIP_KIND,
+            ContributionKind.TEXT_PROMPT_PACK,
+            ContributionKind.TEXT_MOTION,
+            ContributionKind.TEXT_STYLE_PACK,
+            ContributionKind.TEXT_ASSET_PACK,
         }
         assert _WIRED_KINDS == expect
 

@@ -58,5 +58,3 @@ class TextPacksPlugin(BasePlugin):
             *builtin,
         ]
 
-    def initialize(self):
-        return None

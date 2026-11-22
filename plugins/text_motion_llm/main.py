@@ -13,5 +13,3 @@ class TextMotionLlmPlugin(BasePlugin):
         return [Contribution(ContributionKind.TEXT_MOTION, "llm_motion", TextMotionAuthor(),
                              meta={"preview": "exact", "fidelity": "exact"})]
 
-    def initialize(self):
-        return None
