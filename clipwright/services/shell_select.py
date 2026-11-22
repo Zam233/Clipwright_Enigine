@@ -27,7 +27,7 @@ def _which(*names: str) -> str:
     return ""
 
 
-def select_shell() -> ShellSpec:
+def select_shell(*, fallback: bool = True) -> ShellSpec:
     if os.name == "nt":
         pwsh = _which("pwsh.exe", "pwsh")
         if pwsh:
@@ -35,7 +35,7 @@ def select_shell() -> ShellSpec:
                 "pwsh", pwsh,
                 (pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"),
             )
-        powershell = _which("powershell.exe", "powershell")
+        powershell = _which("powershell.exe", "powershell") if fallback else ""
         if powershell:
             return ShellSpec(
                 "powershell", powershell,
@@ -46,7 +46,7 @@ def select_shell() -> ShellSpec:
     bash = _which("bash")
     if bash:
         return ShellSpec("bash", bash, (bash, "-lc"))
-    sh = _which("sh")
+    sh = _which("sh") if fallback else ""
     if sh:
         return ShellSpec("sh", sh, (sh, "-lc"), fallback=True)
     raise ShellUnavailable("未找到 bash 或 sh")

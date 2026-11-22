@@ -45,8 +45,12 @@ def _utcnow_iso() -> str:
 _APPROVAL_TTL_SEC = 600.0
 
 
-def _expiry_iso(ttl_sec: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=ttl_sec)).isoformat()
+def _expiry_iso(ttl_sec: float | None = None) -> str:
+    from clipwright.config import settings
+
+    ttl = float(ttl_sec if ttl_sec is not None
+                else getattr(settings, "exec_approval_ttl_sec", 600.0) or 600.0)
+    return (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
 
 
 def _expired(item: dict[str, Any]) -> bool:
@@ -182,7 +186,9 @@ async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
         try:
             from clipwright.services.shell_select import select_shell
 
-            _spec = select_shell()
+            from clipwright.config import settings as _exec_settings
+
+            _spec = select_shell(fallback=bool(getattr(_exec_settings, "exec_shell_fallback", True)))
             shell = shell or _spec.name
             shell_prefix = _spec.prefix
         except Exception:  # noqa: BLE001
@@ -240,7 +246,9 @@ async def run_command(
     from clipwright.services.shell_select import ShellUnavailable, select_shell
 
     try:
-        shell_spec = select_shell()
+        from clipwright.config import settings as _exec_settings
+
+        shell_spec = select_shell(fallback=bool(getattr(_exec_settings, "exec_shell_fallback", True)))
     except ShellUnavailable as exc:
         return {"status": "rejected", "reason": str(exc)}
     shell_name = shell_spec.name
@@ -327,10 +335,13 @@ async def run_command(
                     "hardFloor": bool(floor),
                     "shell": shell_name,
                 },
+                "risk_sha256": hashlib.sha256(
+                    f"{final}|{cmd}|{cwd}".encode("utf-8")
+                ).hexdigest(),
                 "history": list((risk_context or {}).get("history") or []),
                 "requestedBy": "supervisor",
                 # 授权窗口 10 分钟过期：一条高危命令挂三天后再点，风险判断早已失context
-                "expiresAt": _expiry_iso(_APPROVAL_TTL_SEC),
+                "expiresAt": _expiry_iso(),
             }
             _PENDING.setdefault(pipeline_id, {})[approval_id] = item
             _trace(pipeline_id, "warning", f"等待授权（{final}）：{cmd[:60]}", item)
@@ -429,6 +440,13 @@ async def approve(
         actual = hashlib.sha256(str(item.get("command") or "").encode("utf-8")).hexdigest()
         if actual != expected:
             raise ValueError("approval_hash_mismatch：命令与批准时不一致，拒绝执行")
+    expected_risk = str(item.get("risk_sha256") or "")
+    if expected_risk:
+        actual_risk = hashlib.sha256(
+            f"{item.get('riskLevel')}|{item.get('command')}|{item.get('cwd')}".encode("utf-8")
+        ).hexdigest()
+        if actual_risk != expected_risk:
+            raise ValueError("approval_hash_mismatch：风险记录与批准时不一致，拒绝执行")
     (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
     return await _execute(
         pipeline_id, item["command"], cwd=item.get("cwd", ""),

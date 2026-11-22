@@ -29,8 +29,10 @@ def _sha(text: str) -> str:
 
 
 def _history(task: Task, limit: int = 20) -> list[ExecHistoryItem]:
+    from clipwright.config import settings
     from clipwright.services import exec_store
 
+    limit = int(getattr(settings, "exec_history_limit", limit) or limit)
     try:
         rows = exec_store.list_history(task, limit=limit)
     except Exception:  # noqa: BLE001
