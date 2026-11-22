@@ -7,7 +7,7 @@
 4. 传 `--variables '{"text":""}'` 渲染 → 同一时刻画面应几乎清空（说明变量确实驱动文本）；
 5. 传另一段文案渲染 → 画面应再次有内容且与第 3 步不同。
 
-用法（工作目录 J:\\Clipwright，需 ffmpeg + HyperFrames/Chromium）：
+用法（在仓库根目录执行，需 ffmpeg + HyperFrames/Chromium）：
     python scripts/verify_mg_variables.py
 退出码 0 = 全部断言通过。
 """
@@ -22,7 +22,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, r"J:\Clipwright")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from clipwright.animation.hyperframes_renderer import HyperframesRenderer  # noqa: E402
 from clipwright.animation.mg_renderer import MGRenderer  # noqa: E402

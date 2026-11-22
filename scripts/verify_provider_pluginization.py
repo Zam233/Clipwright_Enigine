@@ -26,6 +26,8 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
+from _repo_paths import frontend_root as _frontend_root
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 RESULTS: list[tuple[str, bool, str]] = []
@@ -225,7 +227,7 @@ def check_display_spec_contract_sync() -> None:
 
     root = Path(__file__).resolve().parents[1]
     backend = root / "plugins/genui/contract.json"
-    frontend = Path(r"J:\Clipweight-Client\src\features\genui\contract.json")
+    frontend = _frontend_root() / "src/features/genui/contract.json"
     assert backend.exists(), f"缺少后端契约文件：{backend}"
     if not frontend.exists():
         print("  （前端仓库不在本机：跳过跨仓字节比对）")
@@ -287,7 +289,7 @@ def check_display_spec_contract_frontend_subset() -> None:
     import re
     from pathlib import Path
 
-    frontend_root = Path(r"J:\Clipweight-Client")
+    frontend_root = _frontend_root()
     contract_path = frontend_root / "src/features/genui/contract.json"
     types_path = frontend_root / "src/features/genui/types.ts"
     if not (contract_path.exists() and types_path.exists()):

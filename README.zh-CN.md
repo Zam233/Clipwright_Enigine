@@ -93,7 +93,15 @@ powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
 `scripts\start.ps1` 会先体检 `ffmpeg` 与模型缓存，然后启动 MongoDB、引擎（`:8080`）与 Web 编辑器（`:5173`）；
-加 `-NoFrontend` 只启引擎。脚本默认按 `J:\Clipweight-Client` 查找前端，路径不同请改脚本顶部的 `$frontend`。
+加 `-NoFrontend` 只启引擎。
+
+脚本默认在前端仓库与本仓库**同级**时查找 `..\Clipweight-Client`。如果前端在别处，启动前设置
+`CLIPWRIGHT_FRONTEND_ROOT`：
+
+```powershell
+$env:CLIPWRIGHT_FRONTEND_ROOT = "D:\code\Clipweight_Client"
+powershell -ExecutionPolicy Bypass -File scripts\start.ps1
+```
 
 ### 2. 启动 Web 编辑器（可选）
 

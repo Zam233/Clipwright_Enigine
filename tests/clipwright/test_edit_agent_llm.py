@@ -427,7 +427,7 @@ async def test_audio_duration_wins_over_plan_duration(monkeypatch) -> None:
     # 场景总长 6+7+8=21s；配音 658s；规划书写死 300s → 应取 658s
     ctx = _context()
     ctx.extra_params["audio_duration_sec"] = 658.0
-    ctx.extra_params["audio_path"] = "J:/voice.mp3"
+    ctx.extra_params["audio_path"] = "/tmp/voice.mp3"
     inp = _input(ctx, _scenes(with_duration=True))
     inp.production_plan = {"total_duration_sec": 300.0}
 

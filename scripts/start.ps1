@@ -6,10 +6,17 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
-# 前端仓库已独立（方式 A）：前端位于 J:\Clipweight-Client（不再随主项目 web/ 分发）
-$frontend = 'J:\Clipweight-Client'
-if (-not (Test-Path "$frontend\package.json")) {
-    Write-Host "前端仓库不存在: $frontend（请确认前端已独立放置）" -ForegroundColor Red
+# 前端仓库已独立（方式 A）。位置优先级：
+#   1. CLIPWRIGHT_FRONTEND_ROOT 环境变量
+#   2. 与本仓库同级的 Clipweight-Client（双仓并列 clone 的默认布局）
+. "$PSScriptRoot\_frontend.ps1"
+$frontend = Resolve-FrontendRoot $root
+$env:CLIPWRIGHT_FRONTEND_ROOT = $frontend   # 供 check_env.ps1 等子脚本复用
+
+if (-not $NoFrontend -and -not (Test-Path "$frontend\package.json")) {
+    Write-Host "前端仓库不存在: $frontend" -ForegroundColor Red
+    Write-Host "  请设置 CLIPWRIGHT_FRONTEND_ROOT 指向 Clipweight-Client，或把它放在本仓库同级目录；" -ForegroundColor Yellow
+    Write-Host "  只启后端可加 -NoFrontend。" -ForegroundColor Yellow
     exit 1
 }
 
@@ -73,11 +80,11 @@ if ($backendReady) {
 Write-Host '前端 dev:   http://localhost:5173/  （Ctrl+C 停止前端；后端用 scripts\stop.ps1 停止）' -ForegroundColor Green
 
 if ($NoFrontend) {
-    Write-Host '已按 -NoFrontend 跳过前端。需要时手动启动：cd J:\Clipweight-Client; npm run dev' -ForegroundColor Yellow
+    Write-Host '已按 -NoFrontend 跳过前端。需要时到前端仓库目录执行 npm run dev' -ForegroundColor Yellow
     exit 0
 }
 
-# 6. 前端（前台，独立仓库 J:\Clipweight-Client）
+# 6. 前端（前台，独立仓库）
 Push-Location $frontend
 npm run dev
 Pop-Location

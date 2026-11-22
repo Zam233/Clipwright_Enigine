@@ -24,12 +24,14 @@ import re
 import sys
 from pathlib import Path
 
+from _repo_paths import frontend_root
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-#: 前端仓库默认位置（与本仓库同级）
-CLIENT_DEFAULT = Path("J:/Clipweight-Client")
+#: 前端仓库默认位置：CLIPWRIGHT_FRONTEND_ROOT，否则与本仓库同级
+CLIENT_DEFAULT = frontend_root()
 
 #: 路径起点：字符串/模板串里的 `/api/`（终点靠 `_extract_path` 扫描，才不会被
 #: 模板串内嵌的引号截断，例如 `` `/api/asset/${id}/thumbnail${q ? '?a=1' : ''}` ``）。

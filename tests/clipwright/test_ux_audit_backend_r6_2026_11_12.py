@@ -41,11 +41,14 @@ def test_use_plugin_slots_reads_same_cache_key_it_writes():
     否则缓存永不命中、每次挂载都多发请求。"""
     from pathlib import Path
 
-    # 前端仓库在开发机同盘的 J:\Clipweight-Client；CI（Linux）没有该路径，
-    # 跨仓源码断言只能在本机执行，缺环境时跳过而不是报 FileNotFoundError。
-    client_root = Path(r"J:\Clipweight-Client")
+    # 前端仓库位置：CLIPWRIGHT_FRONTEND_ROOT，否则与本仓库同级；CI 单仓时跳过。
+    import os
+
+    raw = os.environ.get("CLIPWRIGHT_FRONTEND_ROOT", "").strip()
+    client_root = Path(raw).expanduser() if raw else (
+        Path(__file__).resolve().parents[2].parent / "Clipweight-Client")
     if not client_root.is_dir():
-        pytest.skip(r"前端仓库不在本机（J:\Clipweight-Client），跳过跨仓源码断言")
+        pytest.skip(f"前端仓库不在本机（{client_root}），跳过跨仓源码断言")
     if shutil.which("node") is None:
         pytest.skip("本机没有 node，跳过前端源码断言")
     check = (

@@ -33,7 +33,7 @@ def test_payload_exposes_tool_calls_path_and_total():
     payload = AgentResult(
         run_id="r", kind="stage", status="ok", stage="edit",
         tool_calls=[{"tool": "video_trim", "status": "error"}],
-        tool_calls_path="J:/ws/reports/tool_calls/edit-1.json",
+        tool_calls_path="/tmp/ws/reports/tool_calls/edit-1.json",
     ).to_tool_payload()
     assert payload["tool_calls_path"].endswith("edit-1.json")
     assert payload["tool_calls_total"] == 1
