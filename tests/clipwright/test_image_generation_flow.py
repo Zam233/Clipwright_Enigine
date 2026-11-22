@@ -34,6 +34,7 @@ class FakeProvider:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.batch_calls = 0
 
     def default_model(self) -> str:
         return "fake-model"
@@ -43,6 +44,7 @@ class FakeProvider:
             sizes=("1024x1024",),
             max_n=2,
             cost_per_image_usd=0.01,
+            supports_batch=True,
         )
 
     async def probe(self, config=None) -> bool:
@@ -51,6 +53,10 @@ class FakeProvider:
     async def generate(self, request):
         self.calls += 1
         return [GeneratedImage(data=PNG, mime="image/png")]
+
+    async def generate_batch(self, requests):
+        self.batch_calls += 1
+        return [[GeneratedImage(data=PNG, mime="image/png")] for _ in requests]
 
 
 @pytest.fixture
@@ -98,6 +104,15 @@ async def test_generate_writes_workspace_and_reuses(workspace, fake_provider):
     assert second.ok and second.reused is True
     assert second.rel_path == first.rel_path
     assert fake_provider.calls == 1  # 同参数不重复调用 provider
+
+
+@pytest.mark.asyncio
+async def test_generate_many_uses_provider_batch(workspace, fake_provider):
+    svc = ImageGenerationService(workspace)
+    out = await svc.generate_many(prompts=["a", "b"], size="1024x1024")
+    assert [o.ok for o in out] == [True, True]
+    assert fake_provider.batch_calls == 1
+    assert fake_provider.calls == 0
 
 
 @pytest.mark.asyncio
@@ -208,6 +223,19 @@ async def test_image_generate_batch_partial_failure(monkeypatch, tmp_path):
                                        "ok": True, "rel_path": f"materials/image/{prompt}.png",
                                        "sha256": "x", "mime": "image/png",
                                    })
+
+        async def generate_many(self, *, prompts, **_kwargs):
+            out = []
+            for prompt in prompts:
+                try:
+                    out.append(await self.generate(prompt=prompt))
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"{type(exc).__name__}: {exc}"
+                    out.append(SimpleNamespace(
+                        ok=False,
+                        as_dict=lambda msg=msg: {"ok": False, "error": msg},
+                    ))
+            return out
 
     monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
     tool = tool_mod.ImageGenerateBatchTool()

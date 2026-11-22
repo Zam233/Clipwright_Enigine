@@ -249,40 +249,23 @@ class ImageGenerateBatchTool(BaseTool):
                 error=f"prompts 最多 20 项（收到 {len(clean)}）",
             )
 
-        import asyncio
-
         service = ImageGenerationService(root)
-        sem = asyncio.Semaphore(max(1, min(4, int(concurrency or 2))))
-
-        async def _one(index: int, prompt: str) -> dict:
-            if tool_jobs.is_cancelled(job.job_id):
-                return {"index": index, "status": "skipped", "error": "cancelled"}
-            async with sem:
-                try:
-                    outcome = await service.generate(
-                        prompt=prompt, size=size, n=n, model=model,
-                        source_id=source_id, seed=seed,
-                    )
-                    return {"index": index, **outcome.as_dict()}
-                except Exception as exc:  # noqa: BLE001 — 逐项失败
-                    return {"index": index, "ok": False, "error": f"{type(exc).__name__}: {exc}",
-                            "prompt": prompt[:120]}
-
         job = tool_jobs.create("image_generate_batch", len(clean))
+        outcomes = await service.generate_many(
+            prompts=clean, size=size, n=n, model=model,
+            source_id=source_id, seed=seed, concurrency=concurrency,
+        )
+        items = [{"index": i, **o.as_dict()} for i, o in enumerate(outcomes)]
         progress = {"ok": 0, "failed": 0}
-
-        async def _tracked(index: int, prompt: str) -> dict:
-            result = await _one(index, prompt)
-            if result.get("ok"):
+        for item in items:
+            if item.get("ok"):
                 progress["ok"] += 1
             else:
                 progress["failed"] += 1
             tool_jobs.update(job.job_id, completed=progress["ok"],
                              failed=progress["failed"])
-            tool_jobs.emit_progress(task_id, job)
-            return result
+        tool_jobs.emit_progress(task_id, job)
 
-        items = await asyncio.gather(*[_tracked(i, p) for i, p in enumerate(clean)])
         ok_count = sum(1 for x in items if x.get("ok"))
         failed = [x for x in items if not x.get("ok")]
         tool_jobs.finish(job.job_id, failed=len(failed),

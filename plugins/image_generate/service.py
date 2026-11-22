@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -294,6 +295,103 @@ class ImageGenerationService:
             return ImageGenerationOutcome(
                 ok=False, provider=provider_id, source_id=str(src.get("id") or ""),
                 model=chosen_model, error=str(exc) or type(exc).__name__)
+        return self._finish(
+            src=src, provider_id=provider_id, chosen_model=chosen_model,
+            prompt=prompt, resolved_size=resolved_size, count=count,
+            seed=seed, caps=caps, key=key, images=images,
+        )
+
+    async def generate_many(
+        self, *, prompts: list[str], size: str = "", n: int = 1,
+        model: str = "", source_id: str = "", seed: int | None = None,
+        concurrency: int = 2,
+    ) -> list[ImageGenerationOutcome]:
+        """批量生成：provider 支持时一次原生 batch，否则逐项 generate 回退。"""
+        clean = [str(p or "").strip() for p in (prompts or [])]
+        if not clean:
+            return []
+        try:
+            src, chosen_model = resolve_image_source(source_id, model)
+            provider_id = str(src.get("provider") or "").strip()
+            impl = self._resolve_provider(provider_id)
+            caps = impl.capabilities(chosen_model)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc) or type(exc).__name__
+            return [ImageGenerationOutcome(ok=False, error=msg) for _ in clean]
+
+        resolved = ps.resolve_for_source(str(src.get("id") or "")) or {}
+        outcomes: list[ImageGenerationOutcome | None] = [None] * len(clean)
+        pending: list[tuple[int, str, str, int, str]] = []
+        for i, prompt in enumerate(clean):
+            if not prompt:
+                outcomes[i] = ImageGenerationOutcome(ok=False, error="prompt 不能为空")
+                continue
+            try:
+                resolved_size, count = validate_params(caps, prompt=prompt, size=size, n=n)
+            except ImageGenerationError as exc:
+                outcomes[i] = ImageGenerationOutcome(ok=False, error=str(exc))
+                continue
+            key = _idem_key(source_id=str(src.get("id") or ""), provider=provider_id,
+                            model=chosen_model, prompt=prompt, size=resolved_size,
+                            n=count, seed=seed)
+            cached = self._cached(key)
+            if cached is not None:
+                outcomes[i] = ImageGenerationOutcome(
+                    ok=True, rel_path=str(cached["rel_path"]),
+                    abs_path=str(self.root / str(cached["rel_path"])),
+                    sha256=str(cached.get("sha256") or ""),
+                    mime=str(cached.get("mime") or "image/png"),
+                    width=int(cached.get("width") or 0),
+                    height=int(cached.get("height") or 0),
+                    provider=provider_id, source_id=str(src.get("id") or ""),
+                    model=chosen_model, reused=True, cost_usd=cached.get("cost_usd"),
+                )
+            else:
+                pending.append((i, prompt, resolved_size, count, key))
+
+        if pending and callable(getattr(impl, "generate_batch", None)) and len(pending) > 1:
+            requests = [ImageGenerationRequest(
+                prompt=p, model=chosen_model, size=resolved_size, n=count,
+                seed=seed, extra={"source_config": resolved},
+            ) for _, p, resolved_size, count, _ in pending]
+            try:
+                batches = await impl.generate_batch(requests)
+            except Exception:  # noqa: BLE001 — 原生 batch 失败，逐项回退
+                batches = []
+            if len(batches) == len(pending):
+                for (i, prompt, resolved_size, count, key), images in zip(pending, batches):
+                    try:
+                        outcomes[i] = self._finish(
+                            src=src, provider_id=provider_id, chosen_model=chosen_model,
+                            prompt=prompt, resolved_size=resolved_size, count=count,
+                            seed=seed, caps=caps, key=key, images=list(images or []),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        outcomes[i] = ImageGenerationOutcome(
+                            ok=False, provider=provider_id,
+                            source_id=str(src.get("id") or ""), model=chosen_model,
+                            error=f"{type(exc).__name__}: {exc}")
+                pending = []
+
+        if pending:
+            sem = asyncio.Semaphore(max(1, min(4, int(concurrency or 2))))
+
+            async def _one(item):
+                i, prompt, _size, _count, _key = item
+                async with sem:
+                    outcomes[i] = await self.generate(
+                        prompt=prompt, size=size, n=n, model=model,
+                        source_id=source_id, seed=seed,
+                    )
+            await asyncio.gather(*[_one(item) for item in pending])
+
+        return [o or ImageGenerationOutcome(ok=False, error="未生成") for o in outcomes]
+
+    def _finish(
+        self, *, src: dict[str, Any], provider_id: str, chosen_model: str,
+        prompt: str, resolved_size: str, count: int, seed: int | None,
+        caps: Any, key: str, images: list[Any],
+    ) -> ImageGenerationOutcome:
         if not images:
             return ImageGenerationOutcome(
                 ok=False, provider=provider_id, source_id=str(src.get("id") or ""),
