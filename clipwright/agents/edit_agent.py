@@ -1229,15 +1229,16 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         self, scenes: list[dict[str, Any]], candidate_clips: list[dict[str, Any]],
         *, duration_scale: float, base_shot_sec: float,
     ) -> None:
-        """EDL 预取：每个场景首段用 video_trim_batch 一次提交，命中的写入缓存。
+        """EDL 预取：按场景模拟段序列，一次 video_trim_batch 提交全部候选。
 
-        只预取“首段”是刻意保守的：真正的段长/起点由 `_process_scene_units`
-        运行时决定；首段通常覆盖整场景，批量成功即可省掉大部分逐 clip 裁剪。
-        失败/不支持的场景仍在原路径逐项调用 `video_trim`。
+        只预取可确定性推导的 video 段；图片/文字占位/失败回退仍在原路径处理。
+        实际 `_process_scene_units` 命中缓存后不再逐 clip 调用 `video_trim`。
         """
         items: list[dict[str, Any]] = []
         keys: list[tuple[str, float, float]] = []
         for i, scene in enumerate(scenes):
+            if len(items) >= 50:
+                break
             lookup_index = int(scene.get("_orig_index", i))
             scene_duration = float(scene.get("duration_sec", base_shot_sec) * duration_scale)
             if scene_duration <= 1.0:
@@ -1249,24 +1250,37 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             for c in scene_candidates:
                 assets.extend(sorted(c.get("suggested_assets", []),
                                      key=lambda a: a.get("score", 0), reverse=True))
-            assets = _prefer_material_refs(scene, assets)
-            asset = next((a for a in assets if (a.get("local_path") or a.get("url"))), None)
-            if asset is None:
+            assets = [a for a in _prefer_material_refs(scene, assets)
+                      if (a.get("local_path") or a.get("url"))]
+            if not assets:
                 continue
-            source = str(asset.get("local_path") or asset.get("url") or "")
-            if not source or _is_image_source(asset, source):
-                continue
-            if _trim_cache_get(source, 0.0, scene_duration):
-                continue
-            ad = float(asset.get("duration_sec") or scene_duration)
-            seg = min(scene_duration, ad) if ad > 0 else scene_duration
-            if seg <= 0.5:
-                continue
-            items.append({"input_path": source, "start_sec": 0.0,
-                          "duration_sec": round(seg, 3)})
-            keys.append((source, 0.0, round(seg, 3)))
-            if len(items) >= 50:
-                break
+            max_units = max(4, int(math.ceil(scene_duration / 0.5)) + 2)
+            remaining = scene_duration
+            units = 0
+            clip_index = 0
+            source_use_count: dict[str, float] = {}
+            while remaining > 1.0 and units < max_units and len(items) < 50:
+                asset = assets[clip_index % len(assets)]
+                clip_index += 1
+                source = str(asset.get("local_path") or asset.get("url") or "")
+                if not source or _is_image_source(asset, source):
+                    units += 1
+                    remaining = max(0.0, remaining - 0.5)
+                    continue
+                ad = float(asset.get("duration_sec") or remaining)
+                seg = min(remaining, ad) if ad > 0 else remaining
+                if seg <= 0.5:
+                    units += 1
+                    continue
+                cycle = source_use_count.get(source, 0.0)
+                start = round((cycle * seg) % ad, 2) if ad > 0 else 0.0
+                source_use_count[source] = cycle + 1
+                if not _trim_cache_get(source, start, seg):
+                    items.append({"input_path": source, "start_sec": start,
+                                  "duration_sec": round(seg, 3)})
+                    keys.append((source, start, round(seg, 3)))
+                remaining -= seg
+                units += 1
         if not items:
             return
         try:

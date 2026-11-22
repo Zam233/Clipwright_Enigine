@@ -24,14 +24,16 @@ def test_prefetch_first_trims_batches(tmp_path) -> None:
     agent.call_tool = fake_call  # type: ignore[method-assign]
     for i in range(2):
         (tmp_path / f"t{i}.mp4").write_bytes(b"x")
-    scenes = [{"title": "s", "_orig_index": 0, "duration_sec": 4.0}]
+    scenes = [{"title": "s", "_orig_index": 0, "duration_sec": 15.0}]
     candidates = [{"scene_index": 0, "suggested_assets": [
-        {"asset_id": "a", "local_path": "/tmp/a.mp4", "duration_sec": 20.0, "score": 1},
+        {"asset_id": "a", "local_path": "/tmp/a.mp4", "duration_sec": 10.0, "score": 1},
     ]}]
     asyncio.run(agent._prefetch_first_trims(
         scenes, candidates, duration_scale=1.0, base_shot_sec=4.0,
     ))
     assert calls and calls[0]["name"] == "video_trim_batch"
     assert calls[0]["items"][0]["input_path"] == "/tmp/a.mp4"
-    assert _trim_cache_get("/tmp/a.mp4", 0.0, 4.0) == str(tmp_path / "t0.mp4")
+    assert len(calls[0]["items"]) == 2
+    assert _trim_cache_get("/tmp/a.mp4", 0.0, 10.0) == str(tmp_path / "t0.mp4")
+    assert _trim_cache_get("/tmp/a.mp4", 5.0, 5.0) == str(tmp_path / "t1.mp4")
     _TRIM_CACHE.clear()
