@@ -192,7 +192,6 @@ class TimelineInsertImageTool(BaseTool):
             try:
                 report = validate_patch(timeline, plan)
             except Exception as exc:  # noqa: BLE001
-                tool_jobs.stop_heartbeat(heartbeat)
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"预检失败: {exc}")
             return ToolExecResult(
