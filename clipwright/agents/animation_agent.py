@@ -2106,6 +2106,28 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
         return {}
 
+    async def _run_mg_batch_chunks(
+        self, items: list[dict[str, Any]], clip_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """按 generate_mg_batch 上限分块执行，返回 clip_id → row。"""
+        rows: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(items), 12):
+            chunk = items[offset:offset + 12]
+            chunk_ids = clip_ids[offset:offset + 12]
+            try:
+                result = await self.call_tool("generate_mg_batch", items=chunk,
+                                              concurrency=2)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("AnimationAgent: generate_mg_batch 分块失败: %s", exc)
+                continue
+            if str(getattr(result, "status", "")) not in ("success", "ok"):
+                continue
+            out = getattr(result, "output", None) or {}
+            for row, cid in zip(out.get("items") or [], chunk_ids):
+                if row.get("status") == "ok" and row.get("mg_def"):
+                    rows[cid] = row
+        return rows
+
     async def _prefetch_typed_mg(self, logic_jobs: list[Any], context: Any) -> None:
         """对类型化逻辑动画做一次批量预生成，结果按 clip_id 缓存。"""
         if not self._typed_generation_enabled():
@@ -2145,21 +2167,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "width": self._tl_width, "height": self._tl_height,
             })
             clip_ids.append(cid)
-            if len(items) >= 12:
-                break
         if not items:
             return
-        try:
-            result = await self.call_tool("generate_mg_batch", items=items, concurrency=2)
-        except Exception as exc:  # noqa: BLE001 — 批量不可用走原路径
-            logger.debug("AnimationAgent: typed generate_mg_batch 不可用: %s", exc)
-            return
-        if str(getattr(result, "status", "")) not in ("success", "ok"):
-            return
-        out = getattr(result, "output", None) or {}
-        for row, cid in zip(out.get("items") or [], clip_ids):
-            if row.get("status") != "ok" or not row.get("mg_def"):
-                continue
+        rows = await self._run_mg_batch_chunks(items, clip_ids)
+        for cid, row in rows.items():
             cache[cid] = {
                 "mg_def": row["mg_def"], "html": row.get("html", ""),
                 "issues": row.get("issues") or [], "motion": row.get("motion") or {},
@@ -2206,21 +2217,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "width": self._tl_width, "height": self._tl_height,
             })
             clip_ids.append(cid)
-            if len(items) >= 12:
-                break
         if not items:
             return
-        try:
-            result = await self.call_tool("generate_mg_batch", items=items, concurrency=2)
-        except Exception as exc:  # noqa: BLE001 — 批量不可用走原路径
-            logger.debug("AnimationAgent: generate_mg_batch 不可用: %s", exc)
-            return
-        if str(getattr(result, "status", "")) not in ("success", "ok"):
-            return
-        out = getattr(result, "output", None) or {}
-        for row, cid in zip(out.get("items") or [], clip_ids):
-            if row.get("status") != "ok" or not row.get("mg_def"):
-                continue
+        rows = await self._run_mg_batch_chunks(items, clip_ids)
+        for cid, row in rows.items():
             cache[cid] = {
                 "success": True, "mg_def": row["mg_def"],
                 "method": row.get("method") or "batch",

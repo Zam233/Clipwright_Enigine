@@ -37,3 +37,27 @@ def test_prefetch_first_trims_batches(tmp_path) -> None:
     assert _trim_cache_get("/tmp/a.mp4", 0.0, 10.0) == str(tmp_path / "t0.mp4")
     assert _trim_cache_get("/tmp/a.mp4", 5.0, 5.0) == str(tmp_path / "t1.mp4")
     _TRIM_CACHE.clear()
+
+
+def test_process_scene_units_uses_precomputed_without_trim() -> None:
+    from types import SimpleNamespace
+
+    agent = EditAgent.__new__(EditAgent)
+    calls: list[str] = []
+
+    async def fake_call(name, **_kwargs):
+        calls.append(name)
+        raise AssertionError("precomputed path should not call tools")
+
+    agent.call_tool = fake_call  # type: ignore[method-assign]
+    scene = {"title": "s", "_orig_index": 0, "duration_sec": 4.0}
+    candidates = [{"scene_index": 0, "suggested_assets": [
+        {"asset_id": "a", "local_path": "/tmp/a.mp4", "duration_sec": 20.0, "score": 1},
+    ]}]
+    out = asyncio.run(agent._process_scene_units(
+        0, scene, candidates, 4.0, SimpleNamespace(pipeline_id="p"),
+        precomputed={(0, 0): {"path": "/tmp/trim.mp4", "source": "/tmp/a.mp4",
+                              "start": 0.0, "duration": 4.0}},
+    ))
+    assert out and out[0]["processed_path"] == "/tmp/trim.mp4"
+    assert calls == []
