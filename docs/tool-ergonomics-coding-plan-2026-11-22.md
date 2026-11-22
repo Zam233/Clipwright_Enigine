@@ -477,3 +477,29 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 11. WP10 只读复盘。
 
 每个 WP 一个独立 commit/PR，PR 描述必须包含：工具契约、Engine/Plugin 归属、提示词变更、指标对比、回滚方式。
+
+
+---
+
+## 7. 执行进度（2026-11-22）
+
+| WP | 状态 | 提交 | 备注 |
+|---|---|---|---|
+| WP2 image_generate 插件化 | 完成 | `ac0bc00` | provider + image_generate/batch 工具迁入插件；Engine 删除该工具 |
+| WP2 插件数据迁移 | 完成 | `a46f1ac` | `image_providers` 旧 PluginData 自动复制到 `image_generate` |
+| WP1 vision_llm_batch | 完成（工具+material 接入） | `e86b576` 及前序 | 批量、缓存、单项失败；material top 候选使用 |
+| WP5 工作区查询 | 完成 | `83f32ab`、`2b9bb0a` | glob/tree/grep/range + artifact_search/summary |
+| WP3 video_trim_batch | 工具完成，EditAgent 待接入 | `433ac04` | 批量并发、逐项失败 |
+| WP4 generate_mg_batch | 工具完成，AnimationAgent 待接入 | `f528ba7` | 批量并发、逐项失败 |
+| WP7 派发前预检 | 完成 | `6ef0c52` | input_invalid 拒绝，input_insufficient 软处理 |
+| WP6 research 工作区 | 完成 | `d70eac2`、`873ce41` | 工作区注入、grep/glob/tree/range |
+| WP8 进度/取消/心跳 | 部分完成 | — | 文字动画进度已修；batch job 进度/取消未做 |
+| WP9 quality | 完成（质量门 + report） | `6e5bae3`、`b98813e` | final_timeline 后强制 quality；quality_report |
+| WP10 R10 复盘 | 完成（快照+访谈） | `e3277c2`、`bfbfe55` | 只读 review 与按角色 interview |
+
+仍未完成：
+
+- EditAgent 消费 `video_trim_batch`（当前仍逐 clip `video_trim`）；
+- AnimationAgent 消费 `generate_mg_batch`（当前仍逐段 `MGGenerator`）；
+- `image_generate_batch` 的 provider 原生 `generate_batch` 契约（当前插件内并发单张）；
+- 通用 batch job 的进度/取消/心跳（R8 的完整版）。
