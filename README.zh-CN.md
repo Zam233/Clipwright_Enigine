@@ -13,14 +13,7 @@
 <br/>
 
 ![Version](https://img.shields.io/badge/version-0.1.0-4F6BED)
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
-![MongoDB](https://img.shields.io/badge/MongoDB-metadata-47A248?logo=mongodb&logoColor=white)
-![Subagents](https://img.shields.io/badge/subagents-7-4F6BED)
-![Plugins](https://img.shields.io/badge/plugins-42-8B5CF6)
-![Tests](https://img.shields.io/badge/tests-5101_passed-2EA043)
 ![License](https://img.shields.io/badge/license-MPL--2.0-8B5CF6)
-![PRs Welcome](https://img.shields.io/badge/PRs-welcome-2EA043)
 
 </div>
 
@@ -29,9 +22,12 @@
 **Clipwright Engine** 是 Clipwright AI 视频创作系统的 Python 后端：一个 FastAPI 服务，由**一个主 Agent**
 规划，并把各阶段工作派给**阶段子 Agent**，从而把选题变成成片——并且为每一步留下可核对的凭据。
 
-产品逻辑刻意做成**人在回路**：引擎出草稿，Web 编辑器让你在时间轴上审阅，
-一条修改指令继续同一个任务。每一轮都是真实的 `Task`，带目标、限额、事件与降级收据——
-而不是藏在背后的提示词链。
+产品逻辑刻意做成**人在回路**：
+
+> Agent 出初稿 → 你在时间轴上审阅 → 一条修改指令继续同一个任务 → 满意后渲染。
+
+不是藏在背后的提示词链。每一轮都是真实的 `Task`，带目标、限额、事件与降级收据；
+每个阶段结果都是 `AgentResult`，带 run/attempt 身份、交接摘要与证据。
 
 引擎知道**怎么**跑 Agent、工具与插件；**插件是什么、怎么表现**，属于插件自己。
 
@@ -46,20 +42,21 @@
 - **一个主 Agent + 阶段子 Agent**：主 Agent 独占规划与收尾，用 `delegate_agent(stage=…)` 把
   结构 → 素材 → 剪辑 → 动画 → 音频 → 质检派给阶段子 Agent。每个阶段有结构化输入/输出、自己的 run 记录，
   并写回共享黑板；失败回到主 Agent，由它决定重派、跳过还是接受。老六阶段管线已不是执行路径；
-  目标、软着陆/收口、`capped` 终态、暂停/恢复与确定性续跑都在任务内核里。
-- **按能力名解析的工具**：44+ 原子工具与 4 个技能在调用时刻按语义能力名解析，插件可以接管而无需改 Agent；
+  目标、软着陆/收口、`capped` 终态、暂停/恢复、续跑与确定性恢复都在任务内核里。
+- **按能力名解析的工具**：原子工具与技能在调用时刻按语义能力名解析，插件可以接管而无需改 Agent；
   工具自声明权限档位，能力缺失是一等状态而不是异常分支。
 - **可插拔的插件贡献面**：工具、技能、Hook、提示词、UI 插槽、导出预设、display spec 与 provider 家族
-  （LLM / TTS / 嵌入 / 重排序 / STT）都是插件贡献（内置 42 个插件）；provider 实现归插件，引擎只提供协议、
-  注册表与能力位（工具结果风格、视觉消息格式、模型清单、音频引用），而不是厂商名分支。
+  （LLM / TTS / 嵌入 / 重排序 / STT）都是插件贡献；provider 实现归插件，引擎只提供协议、注册表与能力位
+  （工具结果风格、视觉消息格式、模型清单、音频引用），而不是厂商名分支。
   禁用插件，对应能力就消失——没有隐藏的内置兜底。
 - **工作区与媒体管线**：每任务独立工作区、`materials/` 是唯一可写区；FFmpeg 渲染、字幕烧入、
   动效/hyperframes、带优先级的渲染队列与可恢复产物。
-- **SSE 实时链路**：31 种事件类型（任务、Agent run、工具、子 Agent、降级、收口、进度……）
-  共用一套序号模型，断线按 `since_seq` 续传。
+- **SSE 实时链路**：任务事件、Agent run、工具调用、子 Agent 轮次、降级、收口与进度共用一套序号模型，
+  断线按 `since_seq` 续传。
 - **证据优先于声称**：降级收据、收尾报告、run/attempt 归属与 golden replay，让每条成片可复现、
   每次失败可解释。
-- **在真正会疼的地方测试**：5.1k pytest 用例、严格的提示词 lint、CI 中的 ruff 错误门禁。
+- **在真正会疼的地方测试**：覆盖任务内核、阶段与契约的 pytest 用例、严格的提示词 lint，
+  以及 CI 中的 ruff 错误门禁。
 
 ## 快速开始
 
@@ -115,19 +112,22 @@ npm run dev
 
 打开 <http://localhost:5173>。Vite 开发服务器把 `/api` 代理到引擎（`:8080`）。
 
+> 2026-11-08：账号/市场服务（ClipWright Server，`:8090`）已从本仓库与前端剥离——没有账号、登录、
+> CREADIT 与市场；需要鉴权时只在「设置 → 后端连接」配置本地 API 令牌。
+
 ## 技术栈
 
 | 层 | 选型 |
 | --- | --- |
 | 运行时 | Python 3.12 + FastAPI（锁定 `>=0.115,<0.162`） |
 | 数据 | Pydantic v2 + MongoDB（pymongo） |
-| Agent | 自研任务内核：一个主 Agent + 阶段子 Agent |
+| Agent | 自研任务内核：一个主 Agent + 阶段子 Agent，`AgentResult` v2 |
 | 工具 | `ToolRegistry` + 能力解析 + 工具自声明权限档位 |
 | 插件 | 统一贡献契约、清单签名、启停回滚 |
 | 媒体 | FFmpeg（渲染、裁剪、字幕烧入）、动效 / hyperframes |
 | 检索 | ChromaDB + 插件提供的嵌入/重排序 provider |
 | 实时 | SSE（任务事件 / 会话时间线 / 渲染进度 / Agent 流） |
-| 测试 | pytest（5.1k）、提示词 lint（严格）、ruff 错误门禁 |
+| 测试 | pytest、提示词 lint（严格）、ruff 错误门禁 |
 
 ## 许可证
 
