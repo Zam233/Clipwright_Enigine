@@ -124,21 +124,21 @@ def test_material_and_audio_and_quality_configs_come_from_extra():
 
 def test_background_guard_keeps_scrim_but_drops_opaque():
     scrim = {"style": {}, "elements": [{"type": "bg", "background": "rgba(0,0,0,0.45)"}]}
-    assert MGGenerator._ensure_no_background(scrim, "")["elements"][0]["background"] == "rgba(0,0,0,0.45)"
+    assert MGGenerator()._ensure_no_background(scrim, "")["elements"][0]["background"] == "rgba(0,0,0,0.45)"
 
     opaque = {"style": {}, "elements": [{"type": "bg", "background": "#000000"}]}
-    assert MGGenerator._ensure_no_background(opaque, "")["elements"][0]["background"] == "transparent"
+    assert MGGenerator()._ensure_no_background(opaque, "")["elements"][0]["background"] == "transparent"
 
 
 def test_background_guard_respects_allow_scrim_switch():
     scrim = {"style": {}, "elements": [{"type": "bg", "background": "rgba(0,0,0,0.45)"}]}
-    out = MGGenerator._ensure_no_background(scrim, "", allow_scrim=False)
+    out = MGGenerator()._ensure_no_background(scrim, "", allow_scrim=False)
     assert out["elements"][0]["background"] == "transparent"
 
 
 def test_background_guard_keeps_everything_when_vision_prompt_present():
     mg = {"style": {"background": "#101010"}, "elements": [{"type": "bg", "background": "#000"}]}
-    out = MGGenerator._ensure_no_background(mg, "要暗底")
+    out = MGGenerator()._ensure_no_background(mg, "要暗底")
     assert out["style"]["background"] == "#101010"
 
 

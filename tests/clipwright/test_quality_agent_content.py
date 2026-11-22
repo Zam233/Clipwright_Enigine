@@ -20,6 +20,14 @@ from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 
 
+@pytest.fixture(autouse=True)
+def _register_tools():
+    from clipwright.tool import register_builtin_tools
+
+    register_builtin_tools()
+    yield
+
+
 def _ctx() -> AgentContext:
     return AgentContext(
         pipeline_id="p_test",
