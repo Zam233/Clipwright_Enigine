@@ -15,7 +15,7 @@
 
 `task_35690d4b72` 完成了 917 秒、43 场景的知识区长片，但 agent 的工具使用呈现出明显的**高调用、低单次产出、缺少批处理与工作区查询**特征：
 
-- material 的 `vision_llm` 调用 **670 次**，单次中位 **5.7s**、最长 **86s**，第一轮直接打满 200 次工具上限；
+- material 的 `read_image` 调用 **670 次**，单次中位 **5.7s**、最长 **86s**，第一轮直接打满 200 次工具上限；
 - edit 的 `video_trim` 调用 **77 次**，一次只处理一个 clip；
 - 主 Agent 的 `image_generate` 调用 **64 次**，中位 **28s**、最长 **122s**，2 次 ReadTimeout；
 - 主 Agent 的 `list_dir` 调用 **60 次**，其中 4 次是猜错路径；
@@ -60,7 +60,7 @@
 | 主 Agent | `read_file` | 20 | 108ms | 139ms | 2 次超过 100KB |
 | 主 Agent | `delegate_agent` | 28 | 8.5s | 1075s | 1 次 `glow_color` 校验错误 |
 | 主 Agent | `research_agent` | 4 | 17.1s | 17.2s | 2 个 run 均因工作区缺失失败 |
-| material | `vision_llm` | 670 | 5.7s | 86s | 0 次工具错误，但 200 次上限被耗尽 |
+| material | `read_image` | 670 | 5.7s | 86s | 0 次工具错误，但 200 次上限被耗尽 |
 | edit | `video_trim` | 77 | 0.68s | 31.6s | 0 |
 | edit | `image_to_clip` | 3 | 18.8s | 71s | 0 |
 | animation | `generate_mg` | 36 | — | — | 第一次 attempt 因 `glow_color` 失败 |
@@ -71,7 +71,7 @@
 
 ### 3.2 关键事实
 
-- **预算被视觉判定吃掉**：material 两次 attempt 共 313 次工具调用，其中 670 次 `vision_llm`；12 个场景最终 `material_placeholder`。
+- **预算被视觉判定吃掉**：material 两次 attempt 共 313 次工具调用，其中 670 次 `read_image`；12 个场景最终 `material_placeholder`。
 - **图片生成与插入脱节**：主 Agent 生成 30+ 张图，但 `candidate_clips` 里没有 `materials/image` 引用，`edit` 只从候选列表取图；没有 `timeline_insert_image` 调用，图片未进片。
 - **文字动画“看起来消失”**：文字轨 32 条、动画轨 33 条已在项目时间线里；首条文字从 81.1s 开始且前 9 秒处于淡入，时间轴又需要向下滚动，容易被误判为缺失。
 - **research 没有工作区**：`_run_research` 曾构造 `extra_params={}`，worker 的 `read_file/list_dir` 只传 `path`；相对路径按 CWD 解析后被白名单拒绝，且 worker 正常结束被误标为成功。
@@ -113,13 +113,13 @@
 
 **用得不趁手**
 
-- `vision_llm` 670 次，中位 5.7s、最长 86s；第一轮 200 次上限耗尽；
+- `read_image` 670 次，中位 5.7s、最长 86s；第一轮 200 次上限耗尽；
 - 缺少粗筛，模型只能对每个候选看 3 帧；
 - 判定与下载未解耦，预算被重试吃光，最后 12 个场景占位。
 
 **缺少**
 
-- `vision_llm_batch`（一批候选一次评分，支持并发、缓存、局部重试）；
+- `read_image_batch`（一批候选一次评分，支持并发、缓存、局部重试）；
 - `candidate_rerank`（按场景语义先粗排 top-K）；
 - `material_dedupe`；
 - `material_source_probe`（先确认源可用再下载）。
@@ -193,7 +193,7 @@
 
 ### P0 — 先解决最大成本项
 
-#### R1 `vision_llm_batch`
+#### R1 `read_image_batch`
 
 - 输入：`assets[]`（每个含 `asset_id/path/url`）、`scene_context`、`frame_count`、`concurrency`；
 - 输出：每个 asset 独立 `{status, score, tags, description, error}`；
@@ -292,7 +292,7 @@
 
 | 指标 | 当前 | 目标 |
 |---|---:|---:|
-| material `vision_llm` 调用数（43 场景） | 670 | ≤ 100 |
+| material `read_image` 调用数（43 场景） | 670 | ≤ 100 |
 | 主 Agent `image_generate` 调用数 | 64 | ≤ 8 批 |
 | edit `video_trim` 调用数 | 77 | ≤ 6 批 |
 | animation `generate_mg` 调用数 | 36 | ≤ 8 批 |
@@ -309,7 +309,7 @@
 
 ### Phase 1（P0，1–2 周）
 
-- `vision_llm_batch` + 候选粗筛/缓存；
+- `read_image_batch` + 候选粗筛/缓存；
 - `image_generate_batch` + 自动插入；
 - `video_trim_batch` / EDL；
 - `generate_mg_batch` + 前置校验。
@@ -344,7 +344,7 @@
 为验证“结束的任务能否继续”，曾临时放开 `resume` 对终态任务的守卫，并注入只读复盘指令。结果：
 
 1. 任务确实重新进入 tool loop；
-2. 主 Agent 没有把指令当复盘，而是立即开始重跑 `material`，再次调用 `vision_llm`；
+2. 主 Agent 没有把指令当复盘，而是立即开始重跑 `material`，再次调用 `read_image`；
 3. 立即取消，恢复任务 checkpoint / state 备份，并回滚临时代码；
 4. 任务最终保持 `done`，没有把实验写入生产。
 

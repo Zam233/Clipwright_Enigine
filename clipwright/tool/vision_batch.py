@@ -1,7 +1,7 @@
-"""`vision_llm_batch` —— 一批候选一次视觉评分。
+"""`read_image_batch` —— 一批图片/候选一次读取视觉内容。
 
 Engine 侧负责并发、缓存与逐项失败隔离；实际视觉实现仍走 `vision_score` 能力
-（`vision_llm` 或插件接管者）。单批最多 50 个候选。
+（`read_image` 或插件接管者）。单批最多 50 个候选。
 """
 
 from __future__ import annotations
@@ -42,11 +42,11 @@ def _cache_key(asset: dict[str, Any], scene_context: dict[str, Any], frame_count
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-class VisionBatchTool(BaseTool):
+class ReadImageBatchTool(BaseTool):
     """批量视觉评分工具；单项失败不会中断整批。"""
 
-    name = "vision_llm_batch"
-    capability = "vision_score_batch"
+    name = "read_image_batch"
+    capability = "read_image_batch"
     capability_priority = 10
     permission_tier = "costly"
     agent_callable = True
@@ -113,7 +113,7 @@ class VisionBatchTool(BaseTool):
         ctx = dict(scene_context or {})
         frames = max(1, min(6, int(frame_count or 3)))
         sem = asyncio.Semaphore(max(1, min(8, int(concurrency or 4))))
-        job = tool_jobs.create("vision_llm_batch", len(rows))
+        job = tool_jobs.create("read_image_batch", len(rows))
         heartbeat = tool_jobs.start_heartbeat(task_id, job)
         progress = {"ok": 0, "failed": 0}
         metrics = {"cache_hits": 0, "cache_misses": 0, "retries": 0}
@@ -164,7 +164,7 @@ class VisionBatchTool(BaseTool):
                         _CACHE.popitem(last=False)
                     return {"index": index, "cached": False, **result}
                 except Exception as exc:  # noqa: BLE001 — 单候选失败
-                    logger.warning("vision_llm_batch item %s failed: %s", index, exc)
+                    logger.warning("read_image_batch item %s failed: %s", index, exc)
                     return {"index": index, "status": "failed",
                             "error": f"{type(exc).__name__}: {exc}"}
 

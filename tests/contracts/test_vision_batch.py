@@ -1,4 +1,4 @@
-"""vision_llm_batch：并发、缓存、逐项失败。"""
+"""read_image_batch：并发、缓存、逐项失败。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def test_vision_batch_cache_and_partial_failure(monkeypatch) -> None:
     fake = _FakeScorer()
     monkeypatch.setattr(mod, "resolve", lambda _cap: fake)
     mod.clear_vision_batch_cache()
-    tool = mod.VisionBatchTool()
+    tool = mod.ReadImageBatchTool()
     assets = [{"asset_id": "a", "url": "u"}, {"asset_id": "b", "fail": True}]
     out = asyncio.run(tool.execute(
         assets=assets, scene_context={"title": "s", "keywords": ["k"]},
@@ -52,5 +52,5 @@ def test_vision_batch_cache_and_partial_failure(monkeypatch) -> None:
 
 def test_vision_batch_requires_capability(monkeypatch) -> None:
     monkeypatch.setattr(mod, "resolve", lambda _cap: None)
-    out = asyncio.run(mod.VisionBatchTool().execute(assets=[{"asset_id": "a"}]))
+    out = asyncio.run(mod.ReadImageBatchTool().execute(assets=[{"asset_id": "a"}]))
     assert str(out.status) == "not_found"

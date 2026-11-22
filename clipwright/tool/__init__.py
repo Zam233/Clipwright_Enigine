@@ -52,7 +52,7 @@ from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.project_memory import ProjectMemoryTool
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
-from clipwright.tool.stubs import VisionLLMTool
+from clipwright.tool.stubs import ReadImageTool
 from clipwright.tool.timeline_view import TimelineViewTool
 from clipwright.tool.timeline_probe import TimelineProbeTool
 from clipwright.tool.scene_analysis import SceneBudgetCheckTool, ScriptSceneDiffTool
@@ -95,7 +95,7 @@ from clipwright.tool.workspace_search import (
 )
 from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
-from clipwright.tool.vision_batch import VisionBatchTool
+from clipwright.tool.vision_batch import ReadImageBatchTool
 
 
 def register_builtin_tools() -> None:
@@ -136,8 +136,8 @@ def register_builtin_tools() -> None:
         # ── 视觉 ──
         SceneDetectTool(),
         SemanticMatchTool(),
-        VisionLLMTool(),
-        VisionBatchTool(),
+        ReadImageTool(),
+        ReadImageBatchTool(),
         FaceDetectTool(),
         BackgroundRemoveTool(),
         # ── 特效 ──
@@ -231,7 +231,8 @@ __all__ = [
     # Vision
     "SceneDetectTool",
     "SemanticMatchTool",
-    "VisionLLMTool",
+    "ReadImageTool",
+    "ReadImageBatchTool",
     "FaceDetectTool",
     "BackgroundRemoveTool",
     # Effects

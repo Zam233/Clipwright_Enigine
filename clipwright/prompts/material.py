@@ -40,6 +40,6 @@ MATERIAL_ENGLISH_HEAD = (
 
 
 MATERIAL_VISION_BATCH_GUIDE = (
-    "视觉评分优先使用 vision_llm_batch：先按场景候选粗排 top-K，再一批提交；"
-    "缓存键包含素材标识/帧数/场景上下文，失败项单独重试；不要逐候选调用 vision_llm。"
+    "视觉评分优先使用 read_image_batch：先按场景候选粗排 top-K，再一批提交；"
+    "缓存键包含素材标识/帧数/场景上下文，失败项单独重试；不要逐候选调用 read_image。"
 )

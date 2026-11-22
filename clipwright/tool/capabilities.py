@@ -27,8 +27,8 @@ from typing import Any, Iterable
 CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     # 素材 / 质检
     "frame_check": ("frame_validator",),
-    "vision_score": ("vision_llm",),
-    "vision_score_batch": ("vision_llm_batch",),
+    "vision_score": ("read_image",),
+    "vision_score_batch": ("read_image_batch",),
     "generate_mg_batch": ("generate_mg_batch",),
     "material_search": ("material_filter",),
     "material_match": ("semantic_match",),

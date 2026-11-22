@@ -1,4 +1,4 @@
-"""视觉 LLM 工具（VisionLLMTool）— 真实实现。
+"""读图工具（ReadImageTool）— 真实实现。
 
 P1 变更记录：本文件原含 6 个「占位实现返回假 SUCCESS」的 stub 工具，已按
 fix-and-feature-plan P1 处理：
@@ -7,7 +7,7 @@ fix-and-feature-plan P1 处理：
 - video_filter / text_design → 无真实实现，已从 ToolRegistry 摘除
   （其唯一调用链为已删除的对话式编辑死代码，能力由时间线+Agent 返工替代）；
 - subtitle_overflow → 切换为 tool/quality.py 的 SubtitleOverflowCheckTool（真实计算）。
-本文件仅保留真实实现的 VisionLLMTool。
+本文件仅保留真实实现的 ReadImageTool。
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
@@ -23,23 +24,49 @@ from clipwright.tool.base import BaseTool
 logger = logging.getLogger("clipwright.tool.stubs")
 
 
-class VisionLLMTool(BaseTool):
-    """视觉 LLM 分析工具 — 用多模态 LLM 分析视频帧内容。"""
-    name = "vision_llm"
+class ReadImageTool(BaseTool):
+    """读取图片/视频帧内容 — 供所有 Agent 直接看图。"""
+    name = "read_image"
+    capability = "read_image"
     permission_tier = "costly"
-    description = "视觉 LLM 分析：用多模态大模型分析视频帧内容、描述、标签"
+    agent_callable = True
+    dry_run_capable = False
+    description = "读取图片（或视频帧）内容：返回画面描述、标签与匹配分；path 支持本地图片。"
 
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "本地图片路径；省略时用 asset"},
+            "asset": {"type": "object", "description": "素材对象 {local_path,url,...}"},
+            "scene_context": {"type": "object"},
+            "frame_count": {"type": "integer", "default": 1, "minimum": 1, "maximum": 6},
+            "brief": {"type": "string"},
+        },
+        "required": [],
+    }
+
+    async def execute(self, path: str = "", **kwargs: Any) -> ToolExecResult:
         from clipwright.services.vision import VisionService
         from clipwright.tool.frame_extractor import extract_frames
 
-        asset = kwargs.get("asset") or {}
+        asset = dict(kwargs.get("asset") or {})
         scene_context = kwargs.get("scene_context") or {}
-        frame_count = kwargs.get("frame_count", 3)
+        frame_count = int(kwargs.get("frame_count", 1) or 1)
         frame_paths: list[str] = []
+        cleanup_frames = True
 
+        direct = str(path or "").strip()
+        if direct and Path(direct).is_file() and Path(direct).suffix.lower() in {
+            ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif",
+        }:
+            frame_paths = [direct]
+            cleanup_frames = False
+        else:
+            if direct and not asset:
+                asset = {"local_path": direct, "duration_sec": 1}
         try:
-            frame_paths = await extract_frames(asset, int(frame_count))
+            if not frame_paths:
+                frame_paths = await extract_frames(asset, frame_count)
             if not frame_paths:
                 return ToolExecResult(
                     status=ToolStatus.SUCCESS,
@@ -114,6 +141,7 @@ class VisionLLMTool(BaseTool):
                     "tags": list(tags),
                     "labels": list(labels),
                     "description": description,
+                    "path": direct or asset.get("local_path") or asset.get("url") or "",
                     "frames_analyzed": len(frame_paths),
                     "extraction_method": extraction_method,
                 },
@@ -127,6 +155,7 @@ class VisionLLMTool(BaseTool):
                     "score": 0.5,
                     "tags": [],
                     "description": "",
+                    "path": direct or asset.get("local_path") or "",
                     "frames_analyzed": 0,
                     "extraction_method": "error",
                     "fallback": True,
@@ -134,7 +163,7 @@ class VisionLLMTool(BaseTool):
                 },
             )
         finally:
-            for path in frame_paths:
+            for path in (frame_paths if cleanup_frames else []):
                 try:
                     os.remove(path)
                 except OSError as exc:

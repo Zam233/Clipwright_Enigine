@@ -20,8 +20,8 @@ def test_build_review_is_read_only(monkeypatch) -> None:
         degradations=[], failure=None,
     )]
     events = [
-        SimpleNamespace(type="subagent_tool", detail={"tool": "vision_llm"}),
-        SimpleNamespace(type="subagent_tool", detail={"tool": "vision_llm"}),
+        SimpleNamespace(type="subagent_tool", detail={"tool": "read_image"}),
+        SimpleNamespace(type="subagent_tool", detail={"tool": "read_image"}),
         SimpleNamespace(type="task_end", detail={}),
     ]
     monkeypatch.setattr(agent_review.run_store, "list_task", lambda _tid: runs)
@@ -34,6 +34,6 @@ def test_build_review_is_read_only(monkeypatch) -> None:
     assert out["read_only"] is True
     assert out["task"]["status"] == "done"
     assert out["runs"][0]["stage"] == "material"
-    assert out["tools"]["vision_llm"] == 2
+    assert out["tools"]["read_image"] == 2
     assert out["events"]["by_type"]["subagent_tool"] == 2
     assert "final_timeline" in out["blackboard_keys"]

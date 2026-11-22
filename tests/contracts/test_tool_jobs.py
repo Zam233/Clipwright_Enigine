@@ -7,7 +7,7 @@ from clipwright.services import tool_jobs
 
 def test_job_lifecycle() -> None:
     tool_jobs.clear()
-    job = tool_jobs.create("vision_llm_batch", 3)
+    job = tool_jobs.create("read_image_batch", 3)
     assert job.status == "running"
     tool_jobs.update(job.job_id, completed=1)
     assert tool_jobs.get(job.job_id)["status"] == "running"

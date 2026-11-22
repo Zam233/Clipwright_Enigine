@@ -564,7 +564,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `image_generate` | `plugins/image_generate` | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
 | `timeline_insert_image` | Engine 内置 | — | task_id, asset_ref（工作区相对路径）, position（start/end/after:<clip_id>）, duration_sec, motion（ken_burns/still）；走补丁引擎，dry_run 可预览 |
 | `timeline_insert_images` | Engine 内置 | — | task_id, items[](asset_ref/position/duration_sec/motion)；批量插入，逐项返回 clip_id 与失败原因，dry_run 可预览 |
-| `vision_llm_batch` | Engine 内置 | 由 `vision_score` 能力决定（vision_llm 或插件接管） | assets[] + scene_context + frame_count + concurrency；批量视觉评分，单项失败隔离，带缓存 |
+| `read_image_batch` | Engine 内置 | 由 `vision_score` 能力决定（read_image 或插件接管） | assets[] + scene_context + frame_count + concurrency；批量视觉评分，单项失败隔离，带缓存 |
 | `video_trim_batch` | Engine 内置 | 由 `video_trim` 能力决定（内置 ffmpeg 或插件接管） | items[](asset/input_path/start_sec/duration_sec/track/position) + concurrency/idempotency_key；逐项 output_path/error/failures，带 trim 缓存 |
 | `apply_edl` | Engine 内置 | 依赖 `video_trim_batch` | 批量裁剪后按 track/position 落时间线；支持 dry_run |
 | `artifact_search` / `artifact_summary` | Engine 内置 | — | 按关键词搜索产物（不读全文）；读取类型/大小/sha256/顶层结构/预览 |
@@ -956,7 +956,7 @@ secret 字段（密钥类）读取时只返回 `has_value` 与掩码占位、绝
 | `bpm_detect` | BPM 检测 | ffmpeg |
 | `scene_detect` | 场景检测 | ffmpeg |
 | `semantic_match` | 语义匹配 | - |
-| `vision_llm` | 视觉 LLM 接口 | - |
+| `read_image` | 视觉 LLM 接口 | - |
 | `face_detect` | 人脸检测 | ffmpeg |
 | `background_remove` | 背景去除/替换 | ffmpeg |
 | `effect_vignette` | 电影效果 | ffmpeg |

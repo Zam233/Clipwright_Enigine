@@ -221,7 +221,7 @@ def test_tool_reported_cost_is_recorded(monkeypatch):
     from clipwright.tool.registry import ToolRegistry
 
     monkeypatch.setattr(ToolRegistry, "execute", classmethod(fake))
-    out = asyncio.run(sf.execute("vision_llm", {"input_path": "a.mp4"}))
+    out = asyncio.run(sf.execute("read_image", {"path": "a.mp4"}))
     assert out["cost_usd"] == 0.02
     assert out["cost_unknown"] is False
     assert out["record"]["cost_usd"] == 0.02
@@ -235,7 +235,7 @@ def test_costly_tool_without_cost_is_marked_unknown(monkeypatch):
     from clipwright.tool.registry import ToolRegistry
 
     monkeypatch.setattr(ToolRegistry, "execute", classmethod(fake))
-    out = asyncio.run(sf.execute("vision_llm", {"input_path": "a.mp4"}))
+    out = asyncio.run(sf.execute("read_image", {"path": "a.mp4"}))
     assert out["cost_usd"] is None
     assert out["cost_unknown"] is True
     assert out["record"]["cost_usd"] is None
@@ -263,14 +263,14 @@ def test_kernel_counts_unknown_cost_calls(monkeypatch):
                            guard=None, on_tool_call=None):
             result = {"status": "ok", "cost_usd": None, "cost_unknown": True}
             if on_tool_call is not None:
-                on_tool_call("vision_llm", result)
+                on_tool_call("read_image", result)
             # 有 final_timeline → 收尾守门不再"推一把"，这次任务里
-            # vision_llm 只被记账一次（下面的 ==1 才有意义）
+            # read_image 只被记账一次（下面的 ==1 才有意义）
             from clipwright.services import task_blackboard as _bb
 
             _bb.put(task.id, "final_timeline", {"tracks": []}, by="audio")
             return {"status": "ok", "finish": {"conclusion": "ok"},
-                    "tool_calls": [{"tool": "vision_llm"}], "rounds": 2,
+                    "tool_calls": [{"tool": "read_image"}], "rounds": 2,
                     "stopped_reason": "model_final"}
 
     k = ak.AgentKernel(ak.KernelDeps(driver=_UnknownCostDriver(),

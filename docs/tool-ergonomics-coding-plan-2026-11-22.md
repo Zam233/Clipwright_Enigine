@@ -30,7 +30,7 @@
 
 | PRD | 工具/能力 | Engine 落点 | 说明 |
 |---|---|---|---|
-| R1 | `vision_llm_batch` | `clipwright/tool/vision_batch.py` | 通用视觉评分批处理；复用 `vision_score` 能力 |
+| R1 | `read_image_batch` | `clipwright/tool/vision_batch.py` | 通用视觉评分批处理；复用 `vision_score` 能力 |
 | R2 | `image_generate` / `image_generate_batch` | **Plugin**（`plugins/image_generate/`） | 文生图能力、provider 选择、批量语义全部归插件；Engine 不注册该工具 |
 | R2 | `timeline_insert_images` | `clipwright/tool/timeline_insert_image.py` 扩展 | 批量插入时间线；Engine 持有 timeline |
 | R3 | `video_trim_batch` / `apply_edl` | `clipwright/tool/video_batch.py` | FFmpeg/时间线是 Engine 能力 |
@@ -109,7 +109,7 @@
 
 ---
 
-### WP1 — R1 `vision_llm_batch`（P0）
+### WP1 — R1 `read_image_batch`（P0）
 
 **文件**
 
@@ -135,7 +135,7 @@
 
 **提示词同步**
 
-- `clipwright/prompts/material.py`：补“优先 `vision_llm_batch`、先粗筛 top-K、禁止逐候选调用”；
+- `clipwright/prompts/material.py`：补“优先 `read_image_batch`、先粗筛 top-K、禁止逐候选调用”；
 - `clipwright/prompts/__init__.py` 导出新 builder（如需要）；
 - `docs/api_reference.md` 工具列表。
 
@@ -409,7 +409,7 @@ Engine 只留 `ImageProvider` 接口与通用基础设施；`image_generate` / `
 
 | 变更 | 提示词文件 | 必改内容 |
 |---|---|---|
-| `vision_llm_batch` | `clipwright/prompts/material.py` | 批量、粗筛、缓存 |
+| `read_image_batch` | `clipwright/prompts/material.py` | 批量、粗筛、缓存 |
 | `image_generate` / `image_generate_batch`（Plugin） | `clipwright/prompts/loop.py` | 工具未安装时不出现；安装后批量 + 插入 |
 | `timeline_insert_images` | `clipwright/prompts/loop.py` | 生成后显式插入 |
 | `video_trim_batch` | `clipwright/prompts/agents.py` | EDL/批量优先 |
@@ -449,7 +449,7 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 
 ## 5. 验收与度量
 
-- `vision_llm` 670 → ≤100；
+- `read_image` 670 → ≤100；
 - `image_generate` 64 → ≤8 批（插件工具；无插件时工具不存在）；
 - `video_trim` 77 → ≤6 批；
 - `generate_mg` 36 → ≤8 批；
@@ -486,7 +486,7 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 | WP | 状态 | 说明 |
 |---|---|---|
 | WP0 批量契约 | 完成 | `BatchResult/BatchItem/JobRef/ToolError` + 契约测试；工具输出附 `batch` |
-| WP1 vision_llm_batch | 完成 | source_fps 缓存、超时、重试、指标、material 接入 |
+| WP1 read_image_batch | 完成 | source_fps 缓存、超时、重试、指标、material 接入 |
 | WP2 image_generate 插件化 | 完成 | provider + 单张/批量工具；Engine 无 image 工具；异步 job + insert |
 | WP3 video_trim_batch / apply_edl | 完成 | track/position/failures/幂等/缓存；EditAgent 两阶段 EDL；apply_edl |
 | WP4 MG batch/preview/validate | 完成 | 批量、前置校验、HTML+网格 preview_path、validate/preview 工具 |

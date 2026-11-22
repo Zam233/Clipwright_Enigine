@@ -23,7 +23,7 @@
 | `event_spot` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `generate_text_video` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `text_to_speech` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
-| `vision_llm` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
+| `read_image` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `voice_clone` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `web_fetch` | tool | costly | ✓ | ✓ | ✗ | ✗ |  |
 | `web_search` | tool | costly | ✓ | ✓ | ✗ | ✗ |  |
