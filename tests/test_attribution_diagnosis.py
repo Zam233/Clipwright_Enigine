@@ -79,10 +79,11 @@ def test_r3_needs_upstream_points_to_declared_stage():
         )),
     ]
     attr = attribute(entries)
-    assert attr.primary_stage == "structure"
-    assert attr.confidence == "mid"
+    # v2：needs 不再挂在 FailureReport 上；仅凭旧字段不能归因到上游
+    assert attr.primary_stage == ""
+    assert attr.confidence == "low"
     assert attr.unrepairable is False
-    assert "structure.material_refs" in attr.reason
+    assert "定位" in attr.reason or attr.reason == ""
 
 
 # ── R2 上游失败未消化 ───────────────────────────────────────

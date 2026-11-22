@@ -95,7 +95,8 @@ def test_summary_contains_actionable_fields_and_truncates():
     assert "structure 第1次" in text
     assert "category=resource_missing" in text
     assert "第 3 段无可用素材" in text
-    assert "需要上游=structure/material_refs" in text
+    # v2：needs 归 AgentOutputBase，FailureReport 不再镜像；摘要仍保留可重试性
+    assert "可重试性=needs_upstream" in text
     assert "降级 material_placeholder" in text
 
     short = ledger.summary(max_chars=80)
