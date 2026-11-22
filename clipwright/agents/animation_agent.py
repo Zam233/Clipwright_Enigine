@@ -568,14 +568,34 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         if marker_type == "text":
                             if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
                                 continue
-                            await self._handle_text_animation_async(
-                                text_track, clip, anim_id, anim_name,
-                                marker, persona_style,
+                            # 文字动画是逐 clip 顺序 await 的长循环；必须把开始/结束
+                            # 写进任务事件流，否则前端只能停在 fact_need，看起来像卡死。
+                            _emit_progress(
+                                f"文字动画 {text_anim_count + 1} 开始：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "text_animation", "done": text_anim_count},
                             )
+                            try:
+                                await self._handle_text_animation_async(
+                                    text_track, clip, anim_id, anim_name,
+                                    marker, persona_style,
+                                )
+                            except Exception as exc:
+                                _emit_progress(
+                                    f"文字动画失败：{anim_name}（{type(exc).__name__}）",
+                                    {"anim_id": anim_id, "clip_id": str(clip.id),
+                                     "kind": "text_animation", "error": str(exc)[:200]},
+                                )
+                                raise
                             text_anim_count += 1
                             self._persist_timeline_tick(timeline)
                             logger.info("AnimationAgent: 【文字动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
+                            _emit_progress(
+                                f"文字动画 {text_anim_count} 完成：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "text_animation", "done": text_anim_count},
+                            )
                             add_event(context.pipeline_id, "animation", "text_anim",
                                       f"【文字动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
@@ -594,12 +614,30 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                       f"【逻辑动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "transition":
-                            self._handle_transition_animation(
-                                clip, prev_clip, anim_id, anim_name,
+                            _emit_progress(
+                                f"过渡动画 {transition_anim_count + 1} 开始：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "transition", "done": transition_anim_count},
                             )
+                            try:
+                                self._handle_transition_animation(
+                                    clip, prev_clip, anim_id, anim_name,
+                                )
+                            except Exception as exc:
+                                _emit_progress(
+                                    f"过渡动画失败：{anim_name}（{type(exc).__name__}）",
+                                    {"anim_id": anim_id, "clip_id": str(clip.id),
+                                     "kind": "transition", "error": str(exc)[:200]},
+                                )
+                                raise
                             transition_anim_count += 1
                             logger.info("AnimationAgent: 【过渡动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
+                            _emit_progress(
+                                f"过渡动画 {transition_anim_count} 完成：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "transition", "done": transition_anim_count},
+                            )
                             add_event(context.pipeline_id, "animation", "transition_anim",
                                       f"【过渡动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 

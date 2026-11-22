@@ -559,7 +559,11 @@ async def run_stage(task: Any, spec: StageSpec) -> AgentResult:
         # 在事件流里看得见进度，而不是等它跑完只给一句 summary。
         from clipwright.services.agent_context import task_scope
 
-        with task_scope(task_id, stage=stage), degradation_scope(degradations), use_route(route):
+        # Animation 会逐 clip 上报文字/过渡动画进度；470 个 clip 的两端事件会超过
+        # 默认 400 的预算，按阶段抬高预算，避免进度在阶段中途被静默截断。
+        _event_budget = 2000 if stage == "animation" else 400
+        with task_scope(task_id, stage=stage, event_budget=_event_budget), \
+                degradation_scope(degradations), use_route(route):
             from clipwright.services.timeouts import wait_or_run
 
             # 技能轮（skill-pluginization M2）：没有 LLM 工具轮的阶段（material /
