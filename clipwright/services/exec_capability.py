@@ -28,6 +28,15 @@ def _sha(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
+def _emit(task: Task, event_type: str, message: str, detail: dict[str, Any]) -> None:
+    try:
+        from clipwright.services.task_events import emit
+
+        emit(str(task.id), event_type, message, detail, span="tool")
+    except Exception:  # noqa: BLE001 — 审计事件失败不能阻断执行
+        pass
+
+
 def _history(task: Task, limit: int = 20) -> list[ExecHistoryItem]:
     from clipwright.config import settings
     from clipwright.services import exec_store
@@ -145,6 +154,11 @@ async def run(task: Task, step: PlanStep) -> dict[str, Any]:
         "command_sha256": request.command_sha256,
         "cwd_sha256": request.cwd_sha256,
     }
+    _emit(task, "exec_request", "请求执行命令", {
+        "exec_request_id": request_id, "kind": kind, "cwd": request.cwd,
+        "command": (command or code)[:500], "purpose": request.purpose,
+        "history_count": len(request.history),
+    })
     try:
         if kind == "python":
             out = await gw.run_python(
@@ -169,6 +183,11 @@ async def run(task: Task, step: PlanStep) -> dict[str, Any]:
             task.pending_exec_approval_id = approval.approval_id
         except Exception:  # noqa: BLE001
             pass
+        _emit(task, "exec_risk", f"执行风险 {approval.risk}", {
+            "exec_request_id": request_id, "risk": approval.risk,
+            "reasons": approval.risk_report.reasons,
+            "risk_report": approval.risk_report.model_dump(mode="json"),
+        })
         return {
             "status": "pending_approval",
             "approval_id": approval.approval_id,
@@ -197,6 +216,18 @@ async def run(task: Task, step: PlanStep) -> dict[str, Any]:
         exec_store.append_history(task, history)
     except Exception:  # noqa: BLE001
         pass
+    _emit(task, "exec_risk", f"执行完成（{out.get('riskLevel') or 'unknown'}）", {
+        "exec_request_id": request_id,
+        "risk": str(out.get("riskLevel") or "high"),
+        "reasons": list(out.get("riskReasons") or []),
+    })
+    _emit(task, "exec_result", "命令执行完成", {
+        "exec_request_id": request_id, "status": "done" if ok else "failed",
+        "exit_code": exit_code, "cwd": request.cwd,
+        "shell": out.get("shell") or "",
+        "output_tail": str(out.get("outputTail") or "")[:400],
+        "duration_ms": out.get("durationMs"),
+    })
     return {
         "status": "ok" if ok else "error",
         "exec_request_id": request_id,
