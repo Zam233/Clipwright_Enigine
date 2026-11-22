@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from clipwright.tool.animation_preview import PreviewAnimationClipTool
+from clipwright.tool.animation_preview import PreviewAnimationClipTool, _grid
 from clipwright.tool.animation_validate import ValidateAnimationClipTool
 
 
@@ -36,8 +36,23 @@ def test_validate_animation_clip_accepts_valid() -> None:
 
 def test_preview_animation_clip_writes_html(tmp_path) -> None:
     out = asyncio.run(PreviewAnimationClipTool().execute(
-        mg_def=_mg(), workspace_root=str(tmp_path),
+        mg_def=_mg(), workspace_root=str(tmp_path), grid=False,
     ))
     assert out.status == "success"
     assert out.output["preview_path"]
+    assert out.output["grid_path"] == ""
     assert "<html" in out.output["preview_html"].lower()
+
+
+def test_preview_grid_composes_frames(tmp_path) -> None:
+    from PIL import Image
+
+    frames = []
+    for i, color in enumerate(("#ff0000", "#00ff00")):
+        p = tmp_path / f"f{i}.png"
+        Image.new("RGB", (320, 180), color).save(p)
+        frames.append(p)
+    out = _grid(frames, tmp_path / "grid.png", cols=2, labels=[0.0, 1.0])
+    assert out.is_file()
+    with Image.open(out) as im:
+        assert im.width == 1280 and im.height >= 180

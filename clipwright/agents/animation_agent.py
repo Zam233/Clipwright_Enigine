@@ -67,6 +67,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     tool_whitelist: tuple[str, ...] = (
         "list_animations", "describe_llm_mg",
         "pv_engine_doctor", "pv_engine_stills",
+        "preview_animation_clip",
     )
 
     def _text_anim_defs(self) -> list[Any]:

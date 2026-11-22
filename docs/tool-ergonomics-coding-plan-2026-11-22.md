@@ -489,7 +489,7 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 | WP1 vision_llm_batch | 完成 | source_fps 缓存、超时、重试、指标、material 接入 |
 | WP2 image_generate 插件化 | 完成 | provider + 单张/批量工具；Engine 无 image 工具；异步 job + insert |
 | WP3 video_trim_batch / apply_edl | 完成 | track/position/failures/幂等/缓存；EditAgent 两阶段 EDL；apply_edl |
-| WP4 MG batch/preview/validate | 完成 | 批量、前置校验、preview_path、validate/preview 工具 |
+| WP4 MG batch/preview/validate | 完成 | 批量、前置校验、HTML+网格 preview_path、validate/preview 工具 |
 | WP5 工作区查询 | 完成 | glob/tree/range/grep、artifact、candidate query/rerank/dedupe、分页 |
 | WP6 research | 完成 | workspace 注入、grep/glob/tree/range、worker read_artifact、全失败 tool_failed |
 | WP7 派发前预检 | 完成 | `validate_agent_inputs` / preflight；input_invalid 硬拦截 |

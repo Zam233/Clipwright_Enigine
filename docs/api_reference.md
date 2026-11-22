@@ -569,7 +569,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `apply_edl` | Engine 内置 | 依赖 `video_trim_batch` | 批量裁剪后按 track/position 落时间线；支持 dry_run |
 | `artifact_search` / `artifact_summary` | Engine 内置 | — | 按关键词搜索产物（不读全文）；读取类型/大小/sha256/顶层结构/预览 |
 | `generate_mg_batch` | Engine 内置 | `MGGenerator` | items[](description/text_content/type_id/duration_s/mg_def/persona_style/scene_context) + concurrency；逐项 mg_def/issues/preview_path/error |
-| `validate_animation_clip` / `preview_animation_clip` | Engine 内置 | — | 颜色/关键帧/时长前置校验；HTML 预览写工作区 cache/animation_preview |
+| `validate_animation_clip` / `preview_animation_clip` | Engine 内置 | Playwright | 颜色/关键帧/时长前置校验；preview 渲染 HTML 并抽帧拼网格 PNG（`grid_path`），可选 `inspect=true` 做 vision 质检 |
 | `candidate_query` / `candidate_rerank` / `material_dedupe` | Engine 内置 | — | 候选素材查询/确定性粗排/去重 |
 | `scene_budget_check` / `script_scene_diff` | Engine 内置 | — | 分镜总时长/场景数/密度对账；改稿增删改差异 |
 | `timeline_probe` / `audio_timeline_probe` / `mix_report` | Engine 内置 | — | 时间线素材落点；旁白/字幕/BGM 落点；音量/重叠/间隙报告 |
