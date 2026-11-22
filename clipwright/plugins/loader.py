@@ -163,6 +163,13 @@ class PluginLoadError(Exception):
     """插件加载失败时抛出。"""
 
 
+#: 插件 id 重命名后的旧数据目录别名：新 id 首次访问时把旧 PluginData 复制过来。
+#: 只做一次、保留旧目录；不删除用户数据。
+_LEGACY_PLUGIN_DATA_IDS: dict[str, str] = {
+    "image_generate": "image_providers",
+}
+
+
 class PluginLoader:
     """插件加载器，支持从目录发现和动态加载第三方插件。"""
 
@@ -182,6 +189,14 @@ class PluginLoader:
         都应写入此目录，而非插件自身的安装目录。
         """
         d = self.data_dir / "plugins" / plugin_id
+        legacy_id = _LEGACY_PLUGIN_DATA_IDS.get(str(plugin_id))
+        if legacy_id and not d.exists():
+            legacy = self.data_dir / "plugins" / legacy_id
+            if legacy.is_dir():
+                import shutil
+
+                shutil.copytree(legacy, d)
+                logger.info("插件数据迁移: %s → %s（旧目录保留）", legacy, d)
         if ensure:
             d.mkdir(parents=True, exist_ok=True)
         return d
