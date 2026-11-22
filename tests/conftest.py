@@ -71,11 +71,6 @@ def _reset_circuit_breaker():
     circuit_breaker.reset()
 
 
-@pytest.fixture
-def sample_persona_dir() -> Path:
-    return Path("personas/zam_knowledge_critical")
-
-
 @pytest.fixture(autouse=True)
 def _disable_kernel_recovery(monkeypatch, request):
     """单测默认关闭 Kernel 确定性补派。

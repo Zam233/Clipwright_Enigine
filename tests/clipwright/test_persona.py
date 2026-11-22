@@ -13,24 +13,28 @@ from clipwright.schema.persona import AudioConfig
 
 
 class TestPersonaLoader:
-    def test_load_sample_persona(self) -> None:
-        persona_dir = Path("personas/zam_knowledge_critical")
-        if not persona_dir.exists():
-            pytest.skip("Sample persona not found (scaffold only)")
+    @staticmethod
+    def _write_minimal_persona(root: Path) -> Path:
+        (root / "persona.yaml").write_text(
+            "persona_id: sample_persona\npersona_name: Sample Persona\n",
+            encoding="utf-8",
+        )
+        (root / "parameter.yaml").write_text(
+            "persona_id: sample_persona\n", encoding="utf-8"
+        )
+        return root
 
+    def test_load_minimal_persona(self, tmp_path: Path) -> None:
+        persona_dir = self._write_minimal_persona(tmp_path)
         manifest = load_persona_manifest(persona_dir)
-        assert manifest.persona_id == "zam_knowledge_critical"
+        assert manifest.persona_id == "sample_persona"
+        assert manifest.persona_name == "Sample Persona"
         assert manifest.parameter is not None
-        assert manifest.parameter.identity.tone == "critical_intellectual"
 
-    def test_validate_persona(self) -> None:
-        persona_dir = Path("personas/zam_knowledge_critical")
-        if not persona_dir.exists():
-            pytest.skip("Sample persona not found")
-
+    def test_validate_minimal_persona(self, tmp_path: Path) -> None:
+        persona_dir = self._write_minimal_persona(tmp_path)
         manifest = load_persona_manifest(persona_dir)
         warnings = validate_manifest(manifest)
-        # 验证通过应该没有 error 级别的警告
         critical = [w for w in warnings if "required" in w.lower()]
         assert len(critical) == 0
 

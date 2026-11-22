@@ -88,8 +88,10 @@ if ($visModel) {
 }
 
 # ── 前端仓库 + 端口 ──
-if (-not (Test-Path 'J:\Clipweight-Client\package.json')) {
-    Warn '前端仓库不存在（J:\Clipweight-Client）——start 将跳过前端'
+. "$PSScriptRoot\_frontend.ps1"
+$frontend = Resolve-FrontendRoot $root
+if (-not (Test-Path (Join-Path $frontend 'package.json'))) {
+    Warn "前端仓库不存在（$frontend）——start 将跳过前端；可用 CLIPWRIGHT_FRONTEND_ROOT 指定"
 }
 
 foreach ($p in 8080, 8090, 5173) {

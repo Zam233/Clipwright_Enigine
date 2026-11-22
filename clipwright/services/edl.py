@@ -200,7 +200,7 @@ def _xml_escape(text: str) -> str:
 
 
 def _pathurl(asset_id: str) -> str:
-    """资产 → pathurl：本地绝对路径转规范 file URI（旧实现 file://J:\\... 为
+    """资产 → pathurl：本地绝对路径转规范 file URI（旧实现 `file://` + Windows 路径为
     非法 URI，NLE 无法解析），URL 原样保留。"""
     raw = str(asset_id or "")
     if raw.startswith(("http://", "https://", "file://")):

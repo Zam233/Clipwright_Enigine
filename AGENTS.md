@@ -24,14 +24,14 @@ scripts\stop.ps1         # 停止全部
 ```
 
 - 后端：`uvicorn clipwright.main:app --port 8080`（`CLIPWRIGHT_PORT=8080`，见 `.env.example`）
-- 前端：**独立仓库** `J:\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080）
+- 前端：**独立仓库** `..\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080；位置可用 `CLIPWRIGHT_FRONTEND_ROOT` 覆盖）
 - ~~账号/市场服务~~：2026-11-08 已剥离（`feat/zam_remove_account_system`）。无登录/注册/CREADIT/市场，
   鉴权只剩本地 `CLIPWRIGHT_API_TOKEN`；`K:\Clipwright Server` 不再被启动、也不再被引用
 
 ## 项目结构（后端 monorepo + 前端独立仓库）
 
 ```
-J:\Clipwright                    # 后端（Python FastAPI）
+Clipwright_Enigine/              # 后端（Python FastAPI）
 ├── clipwright/       # 后端源码
 │   ├── agents/       # 阶段子 Agent（结构/素材/剪辑/动画/音频/质检）+ requirements 规划，由主 Agent 派发
 │   ├── api/          # 33 个 API 路由文件
@@ -48,7 +48,7 @@ J:\Clipwright                    # 后端（Python FastAPI）
 ├── docs/             # 20+ 文档
 └── scripts/          # start/stop/check_env 一键启动脚本
 
-J:\Clipweight-Client              # 前端（React 19 + TS 5.5 + Vite，独立 git 仓库）
+..\Clipweight-Client/            # 前端（React 19 + TS 5.5 + Vite，独立 git 仓库）
 └── src/              # 前端源码（见其 AGENTS.md）
 
 K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓库，8090）
@@ -301,7 +301,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 ## 文档维护规则
 
 每次功能更新后，必须同步更新 `docs/` 中的相关文档。详见 [docs/README.md](docs/README.md) 的文档维护规则。
-执行计划期间，`docs/fix-and-feature-plan.md` §10 每批追加执行记录，并同步 `J:\Clipweight-Client\docs\` 副本。
+执行计划期间，`docs/fix-and-feature-plan.md` §10 每批追加执行记录，并同步 `..\Clipweight-Client\docs\` 副本。
 
 ## 新增模块
 
@@ -319,7 +319,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 
 修改代码后，运行（**下面每一行都是 CI 门禁，缺一行就可能在 CI 红灯**）：
 ```bash
-# 后端全量回归（工作目录 J:\Clipwright）
+# 后端全量回归（在仓库根目录执行）
 python -m pytest tests -q        # 期望 4499 passed / 4 skipped / 1 xfailed（2026-10-29 实测）
 python -m pytest tests/test_event_contract.py -q   # 事件契约：EVENT_TYPES ↔ 前端 parser 键集合
 python -c "import clipwright.main"
@@ -329,7 +329,7 @@ python scripts/verify_timebase.py   # 整数时间基座核对（VERIFY PASS）
 python scripts/e2e_smoke.py         # 全管线冒烟（SMOKE PASS）
 python scripts/route_inventory.py --out docs/route_inventory.txt  # 路由清单（文档引用生成物）
 
-# 前端回归（工作目录 J:\Clipweight-Client）
+# 前端回归（在前端仓库根目录执行）
 npm run typecheck                # = tsc --noEmit
 npm run test                     # 期望 1085 passed（127 files，2026-10-29 实测）
 npm run lint                     # 允许 warning，不允许 error

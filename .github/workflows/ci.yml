@@ -34,7 +34,7 @@ jobs:
       - name: Ruff (风格类，仅报告)
         run: python -m ruff check clipwright --statistics --exit-zero
 
-  # 前端已独立（方式 A）：前端源码位于独立仓库 J:\Clipweight-Client
+  # 前端已独立（方式 A）：前端源码位于独立的前端仓库
   # （本地映射），其 CI 由该仓库自行维护：
   #   jobs.frontend → working-directory: 仓库根
   #   steps: npm ci → npm run typecheck → npm run test → npm run lint

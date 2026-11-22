@@ -100,8 +100,15 @@ powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
 `scripts\start.ps1` checks `ffmpeg` and the model cache, starts MongoDB, the engine on `:8080`
-and the web editor on `:5173` (add `-NoFrontend` to run the engine only). It expects the editor at
-`J:\Clipweight-Client`; if yours lives elsewhere, adjust the `$frontend` path at the top of the script.
+and the web editor on `:5173` (add `-NoFrontend` to run the engine only).
+
+It looks for the editor at `..\Clipweight-Client` (a sibling of this repo). If your frontend lives
+elsewhere, point `CLIPWRIGHT_FRONTEND_ROOT` at it before starting:
+
+```powershell
+$env:CLIPWRIGHT_FRONTEND_ROOT = "D:\code\Clipweight_Client"
+powershell -ExecutionPolicy Bypass -File scripts\start.ps1
+```
 
 ### 2. Start the web editor (optional)
 

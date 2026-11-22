@@ -8,7 +8,7 @@ PIP + 混音），然后从 `result.ffmpeg_log`（按执行顺序记录的 ffmpe
    显式设置过的片段（BGM 1.0s）保持原值不被覆盖；
 3. 进度序列单调不减（prepare → … → text → audio → done）。
 
-用法（工作目录 J:\\Clipwright，需 ffmpeg + Chromium）：
+用法（在仓库根目录执行，需 ffmpeg + Chromium）：
     python scripts/verify_render_order.py
 退出码 0 = 全部断言通过。
 """

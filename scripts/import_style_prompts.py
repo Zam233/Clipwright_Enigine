@@ -12,8 +12,9 @@ import io
 import re
 from pathlib import Path
 
-LIB = Path(r"J:\Clipwright\_cache\cap\skills\code-animation-prompts\assets\library\风格提示词")
-TYPES = Path(r"J:\Clipwright\clipwright\animation\prompts\types")
+ROOT = Path(__file__).resolve().parents[1]
+LIB = ROOT / "_cache/cap/skills/code-animation-prompts/assets/library/风格提示词"
+TYPES = ROOT / "clipwright/animation/prompts/types"
 
 #: 类型 → 风格编号（按语义映射；同一风格可复用于多个类型）
 MAP: dict[str, list[str]] = {

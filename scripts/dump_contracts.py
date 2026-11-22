@@ -2,12 +2,12 @@ r"""生成 AgentResult v2 契约 fixture（X01a / X01b）。
 
 fixture 必须**从 pydantic 模型生成**，不许手写 JSON 绕过校验：
 - 后端消费：`tests/contracts/test_agent_result_v2.py::test_snapshot_roundtrip`
-- 前端消费：`J:\Clipweight-Client\src\services\api\contracts\agent_result_v2\*.json`
+- 前端消费：`<frontend-repo>/src/services/api/contracts/agent_result_v2/*.json`
 两处必须**同字节**（X01b 用 SHA256 断言），因此统一由本脚本写出。
 
 用法：
     python scripts/dump_contracts.py
-    python scripts/dump_contracts.py --frontend-out J:\Clipweight-Client\src\services\api\contracts\agent_result_v2
+    python scripts/dump_contracts.py --frontend-out /path/to/Clipweight-Client/src/services/api/contracts/agent_result_v2
 """
 
 from __future__ import annotations

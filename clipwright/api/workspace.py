@@ -659,7 +659,7 @@ async def reveal_workspace_path(payload: dict[str, Any] = Body(...)) -> dict[str
     """用**系统默认方式**打开一个工作区文件（前端 Ctrl/⌘ + 点击产物走这条）。
 
     为什么需要后端：浏览器只能下载或在自身里渲染，无法让 Windows 用默认程序打开
-    `J:\...` 这种本地路径。这里做的是"交给操作系统"，因此必须严格校验路径在
+    `<盘符>:\...` 这种本地路径。这里做的是"交给操作系统"，因此必须严格校验路径在
     工作区内，并且只在有桌面会话时生效（失败如实返回，不假装已打开）。
     """
     p = _check_file_allowed(str(payload.get("path") or ""))

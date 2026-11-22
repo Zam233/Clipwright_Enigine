@@ -4,7 +4,7 @@
 驱动 RenderService 全管线（trim 并行 → xfade 转场 → 字幕 → 链式 MG → PIP → 混音），
 随后对产物做 ffprobe/抽帧校验。
 
-用法（工作目录 J:\\Clipwright）：
+用法（在仓库根目录执行）：
     python scripts/e2e_smoke.py            # 全量（含 MG，需 Chromium）
     python scripts/e2e_smoke.py --no-mg    # 跳过 MG 片段
 

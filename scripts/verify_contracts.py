@@ -5,7 +5,7 @@
 
 用法：
     python scripts/verify_contracts.py
-    python scripts/verify_contracts.py --frontend J:\\Clipweight-Client
+    python scripts/verify_contracts.py --frontend /path/to/Clipweight-Client
 
 退出码：0 = 一致；1 = 缺文件/内容漂移/前端仓不存在（可用 --allow-missing 放宽）。
 """
@@ -17,10 +17,12 @@ import hashlib
 import sys
 from pathlib import Path
 
+from _repo_paths import frontend_root
+
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "tests" / "contracts" / "agent_result_v2"
 FRONTEND_REL = Path("src") / "services" / "api" / "contracts" / "agent_result_v2"
-DEFAULT_FRONTEND = Path(r"J:\Clipweight-Client")
+DEFAULT_FRONTEND = frontend_root()
 
 
 def _sha(path: Path) -> str:

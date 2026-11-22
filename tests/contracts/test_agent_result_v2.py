@@ -19,9 +19,18 @@ from clipwright.schema.agent import FailureReport, Need, RedoRequest
 from clipwright.schema.run import AgentResult, RunSpec, RunStatus
 
 FIXTURES = Path(__file__).resolve().parent / "agent_result_v2"
-FRONTEND_FIXTURES = Path(
-    r"J:\Clipweight-Client\src\services\api\contracts\agent_result_v2"
-)
+
+
+def _frontend_root() -> Path:
+    import os
+
+    raw = os.environ.get("CLIPWRIGHT_FRONTEND_ROOT", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path(__file__).resolve().parents[2].parent / "Clipweight-Client"
+
+
+FRONTEND_FIXTURES = _frontend_root() / "src/services/api/contracts/agent_result_v2"
 
 
 def _result(**kwargs) -> AgentResult:

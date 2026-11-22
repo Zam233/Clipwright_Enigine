@@ -6,7 +6,7 @@
 - 成片时长是否一致；
 - 两条成片之间的 PSNR（copy 路径少一代编码，应不差于重编码路径）。
 
-用法（工作目录 J:\\Clipwright，需 ffmpeg）：
+用法（在仓库根目录执行，需 ffmpeg）：
     python scripts/verify_concat_copy.py
 退出码 0 = 全部断言通过。
 """

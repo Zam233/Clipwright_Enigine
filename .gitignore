@@ -113,3 +113,7 @@ _backup/
 
 # 运行时日志与前端崩溃上报（logs/client-errors.jsonl 由 /api/diagnostics 写入）
 logs/
+
+# Persona 是本地运行时数据，不入库；远程仓库不允许任何 persona 预设
+/personas/
+/clipwright/personas/

@@ -9,7 +9,7 @@
   - reports/*.md          工作区报告原文
   - workspace_tree.txt    工作区文件清单
 
-用法（工作目录 J:\\Clipwright）：
+用法（在仓库根目录执行）：
     python scripts/e2e_300_review.py
     python scripts/e2e_300_review.py --timeout 2400
 """

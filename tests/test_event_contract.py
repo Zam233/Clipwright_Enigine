@@ -16,7 +16,17 @@ import pytest
 
 from clipwright.schema.task import EVENT_TYPES
 
-FRONTEND_SCHEMA = Path(r"J:\Clipweight-Client\src\features\task\eventSchema.ts")
+import os
+
+
+def _frontend_root() -> Path:
+    raw = os.environ.get("CLIPWRIGHT_FRONTEND_ROOT", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path(__file__).resolve().parents[1].parent / "Clipweight-Client"
+
+
+FRONTEND_SCHEMA = _frontend_root() / "src/features/task/eventSchema.ts"
 
 
 def _frontend_keys() -> list[str]:
