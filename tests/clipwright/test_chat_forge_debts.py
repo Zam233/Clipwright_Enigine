@@ -63,7 +63,7 @@ class TestSessionList:
         await forge.add_knowledge(sid, "参考资料正文", source="ref.md")
 
         entry = next(s for s in forge.list_sessions() if s["session_id"] == sid)
-        assert entry["title"] == "我想要冷峻的学术风格"
+        assert entry["title"], "标题由 LLM 生成或回退首条用户消息，不能为空"
         assert entry["message_count"] == 2          # 知识库的系统消息不计入
         assert entry["knowledge_count"] == 1
         assert set(entry["progress"]) == set(_default_draft())
@@ -86,7 +86,7 @@ class TestSessionList:
         await forge.add_knowledge(sid, "文档内容", source="doc.md")
         await forge.message(sid, "这是我真正的第一句话")
         entry = next(s for s in forge.list_sessions() if s["session_id"] == sid)
-        assert entry["title"] == "这是我真正的第一句话"
+        assert entry["title"] and entry["title"] != "文档标题"
 
     @pytest.mark.asyncio
     async def test_owner_filter(self, forge: ChatForge) -> None:

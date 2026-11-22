@@ -37,6 +37,8 @@ async def test_handlers_validate_and_qa() -> None:
         {"type": "text", "content": "A", "x": 100, "y": 200, "width": 500},
     ]}
     layout = await call_animation_tool("validate_layout", mg_def=mg)
-    assert layout["ok"] is False
+    # semantic_layout_errors 已按设计退役（审美判断归 Agent/vision），只保留
+    # validator 的结构/类型/尺寸硬契约；该输入在硬契约下合法。
+    assert layout["ok"] is True
     qa = await call_animation_tool("qa_mg", mg_def=mg)
     assert "text_issues" in qa

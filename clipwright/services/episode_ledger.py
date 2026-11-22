@@ -142,7 +142,7 @@ class EpisodeLedger:
                     detail.append(f"阻塞={f.blocking_point}")
                 if f.retryable and f.retryable != "retry_same":
                     detail.append(f"可重试性={f.retryable}")
-                for need in []:  # v2: needs 不再挂在 FailureReport 上
+                for need in (getattr(f, "needs", None) or []):  # 兼容旧账本字段
                     detail.append(
                         "需要上游="
                         + "/".join(str(need.get(k, "")) for k in ("from_stage", "field") if need.get(k))
