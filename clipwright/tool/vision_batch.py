@@ -69,6 +69,7 @@ class VisionBatchTool(BaseTool):
             },
             "frame_count": {"type": "integer", "default": 3, "minimum": 1, "maximum": 6},
             "concurrency": {"type": "integer", "default": 4, "minimum": 1, "maximum": 8},
+            "task_id": {"type": "string"},
         },
         "required": ["assets"],
     }
@@ -83,6 +84,7 @@ class VisionBatchTool(BaseTool):
         scene_context: dict[str, Any] | None = None,
         frame_count: int = 3,
         concurrency: int = 4,
+        task_id: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
         rows = [x for x in (assets or []) if isinstance(x, dict)]
@@ -151,6 +153,7 @@ class VisionBatchTool(BaseTool):
                 progress["failed"] += 1
             tool_jobs.update(job.job_id, completed=progress["ok"],
                              failed=progress["failed"])
+            tool_jobs.emit_progress(task_id, job)
             return result
 
         items = await asyncio.gather(*[_tracked(i, a) for i, a in enumerate(rows)])

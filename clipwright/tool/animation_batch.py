@@ -48,6 +48,7 @@ class GenerateMGBatchTool(BaseTool):
                 },
             },
             "concurrency": {"type": "integer", "default": 2, "minimum": 1, "maximum": 4},
+            "task_id": {"type": "string"},
             "pipeline_id": {"type": "string"},
         },
         "required": ["items"],
@@ -55,7 +56,7 @@ class GenerateMGBatchTool(BaseTool):
 
     async def execute(
         self, *, items: list[dict[str, Any]] | None = None,
-        concurrency: int = 2, pipeline_id: str = "", **kwargs: Any,
+        concurrency: int = 2, pipeline_id: str = "", task_id: str = "", **kwargs: Any,
     ) -> ToolExecResult:
         rows = [x for x in (items or []) if isinstance(x, dict)]
         if not rows:
@@ -115,6 +116,7 @@ class GenerateMGBatchTool(BaseTool):
                 progress["failed"] += 1
             tool_jobs.update(job.job_id, completed=progress["ok"],
                              failed=progress["failed"])
+            tool_jobs.emit_progress(task_id, job)
             return result
 
         results = await asyncio.gather(*[_tracked(i, r) for i, r in enumerate(rows)])

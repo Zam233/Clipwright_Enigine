@@ -943,6 +943,7 @@ async def execute(
         provided = {
             "workspace_root": extra_ctx.get("workspace_root"),
             "project_id": extra_ctx.get("workspace_project_id") or extra_ctx.get("project_id"),
+            "task_id": str(getattr(task, "id", "") or ""),
         }
         try:
             entry0 = next((e for e in build_surface() if e.name == name), None)

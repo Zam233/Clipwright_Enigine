@@ -66,6 +66,7 @@ class ImageGenerateTool(BaseTool):
             # workspace_root/project_id 注入不会生效，主 agent 调用必报"未找到工作区"。
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
             "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
+            "task_id": {"type": "string", "description": "任务 id（宿主自动注入）"},
         },
         "required": ["prompt"],
     }
@@ -195,6 +196,7 @@ class ImageGenerateBatchTool(BaseTool):
             "concurrency": {"type": "integer", "default": 2, "description": "并发数（1-4）"},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
             "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
+            "task_id": {"type": "string", "description": "任务 id（宿主自动注入）"},
         },
         "required": ["prompts"],
     }
@@ -218,6 +220,7 @@ class ImageGenerateBatchTool(BaseTool):
         source_id: str = "",
         seed: int | None = None,
         concurrency: int = 2,
+        task_id: str = "",
         project_id: str = "",
         workspace_root: str = "",
         dry_run: bool = False,
@@ -276,6 +279,7 @@ class ImageGenerateBatchTool(BaseTool):
                 progress["failed"] += 1
             tool_jobs.update(job.job_id, completed=progress["ok"],
                              failed=progress["failed"])
+            tool_jobs.emit_progress(task_id, job)
             return result
 
         items = await asyncio.gather(*[_tracked(i, p) for i, p in enumerate(clean)])

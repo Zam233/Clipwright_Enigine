@@ -105,3 +105,22 @@ def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
 
 def clear() -> None:
     _JOBS.clear()
+
+
+def emit_progress(task_id: str, job: ToolJob, *, message: str = "") -> None:
+    """把 job 进度写进任务事件流（可选；无 task_id 时静默）。"""
+    if not task_id:
+        return
+    try:
+        from clipwright.services import task_events
+
+        task_events.emit(
+            str(task_id), "narration",
+            message or f"{job.kind} 进度 {job.completed + job.failed}/{job.total}",
+            {"kind": "tool_job_progress", "job_id": job.job_id, "tool": job.kind,
+             "status": job.status, "total": job.total,
+             "completed": job.completed, "failed": job.failed},
+            span="tool",
+        )
+    except Exception:  # noqa: BLE001 — 进度事件不影响批处理
+        pass
