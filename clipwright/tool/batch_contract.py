@@ -25,9 +25,11 @@ def attach_batch_contract(output: dict[str, Any], *, job_id: str = "") -> dict[s
             data={k: v for k, v in row.items()
                   if k not in ("index", "status", "error", "error_info")},
         ))
-    result = BatchResult.from_items(
-        items, job=JobRef(job_id=job_id or str(output.get("job_id") or ""),
-                          status="running"),
+    result = BatchResult.from_items(items)
+    job_status = result.status if result.status in ("done", "partial", "failed") else "running"
+    result.job = JobRef(
+        job_id=job_id or str(output.get("job_id") or ""),
+        status=job_status,  # type: ignore[arg-type]
     )
     output["batch"] = result.model_dump()
     return output
