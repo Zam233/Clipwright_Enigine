@@ -716,6 +716,10 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 轨道装配在下方按场景顺序串行执行，保证时间线顺序与串行版完全一致。
             scene_concurrency = max(1, int(getattr(settings, "material_concurrency", 6)))
             scene_sem = asyncio.Semaphore(scene_concurrency)
+            await self._prefetch_first_trims(
+                scenes, candidate_clips,
+                duration_scale=duration_scale, base_shot_sec=base_shot_sec,
+            )
 
             async def _process_one(i: int, scene: dict[str, Any]) -> list[dict[str, Any]]:
                 async with scene_sem:
@@ -1220,6 +1224,67 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             "pip_scenes": pip_scenes,
             "pacing_notes": pacing_notes[:10],
         }
+
+    async def _prefetch_first_trims(
+        self, scenes: list[dict[str, Any]], candidate_clips: list[dict[str, Any]],
+        *, duration_scale: float, base_shot_sec: float,
+    ) -> None:
+        """EDL 预取：每个场景首段用 video_trim_batch 一次提交，命中的写入缓存。
+
+        只预取“首段”是刻意保守的：真正的段长/起点由 `_process_scene_units`
+        运行时决定；首段通常覆盖整场景，批量成功即可省掉大部分逐 clip 裁剪。
+        失败/不支持的场景仍在原路径逐项调用 `video_trim`。
+        """
+        items: list[dict[str, Any]] = []
+        keys: list[tuple[str, float, float]] = []
+        for i, scene in enumerate(scenes):
+            lookup_index = int(scene.get("_orig_index", i))
+            scene_duration = float(scene.get("duration_sec", base_shot_sec) * duration_scale)
+            if scene_duration <= 1.0:
+                continue
+            scene_candidates = [
+                c for c in candidate_clips if c.get("scene_index") == lookup_index
+            ]
+            assets: list[dict[str, Any]] = []
+            for c in scene_candidates:
+                assets.extend(sorted(c.get("suggested_assets", []),
+                                     key=lambda a: a.get("score", 0), reverse=True))
+            assets = _prefer_material_refs(scene, assets)
+            asset = next((a for a in assets if (a.get("local_path") or a.get("url"))), None)
+            if asset is None:
+                continue
+            source = str(asset.get("local_path") or asset.get("url") or "")
+            if not source or _is_image_source(asset, source):
+                continue
+            if _trim_cache_get(source, 0.0, scene_duration):
+                continue
+            ad = float(asset.get("duration_sec") or scene_duration)
+            seg = min(scene_duration, ad) if ad > 0 else scene_duration
+            if seg <= 0.5:
+                continue
+            items.append({"input_path": source, "start_sec": 0.0,
+                          "duration_sec": round(seg, 3)})
+            keys.append((source, 0.0, round(seg, 3)))
+            if len(items) >= 50:
+                break
+        if not items:
+            return
+        try:
+            result = await self.call_tool(
+                "video_trim_batch", items=items, concurrency=2,
+            )
+        except Exception as exc:  # noqa: BLE001 — 批量预取失败仍走逐项
+            logger.debug("EditAgent: video_trim_batch 预取不可用: %s", exc)
+            return
+        if str(getattr(result, "status", "")) not in ("success", "ok"):
+            return
+        out = getattr(result, "output", None) or {}
+        for row, key in zip(out.get("items") or [], keys):
+            if row.get("status") != "ok":
+                continue
+            path = str(row.get("output_path") or "")
+            if path:
+                _trim_cache_set(key[0], key[1], key[2], path)
 
     async def _process_scene_units(
         self,
