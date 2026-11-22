@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections import OrderedDict
@@ -124,3 +125,27 @@ def emit_progress(task_id: str, job: ToolJob, *, message: str = "") -> None:
         )
     except Exception:  # noqa: BLE001 — 进度事件不影响批处理
         pass
+
+
+async def _heartbeat(job_id: str, task_id: str, interval: float = 10.0) -> None:
+    while True:
+        await asyncio.sleep(max(1.0, float(interval)))
+        job = _JOBS.get(str(job_id))
+        if job is None or job.status in ("done", "partial", "failed", "cancelled"):
+            return
+        emit_progress(task_id, job, message=f"{job.kind} 心跳 {job.completed + job.failed}/{job.total}")
+
+
+def start_heartbeat(task_id: str, job: ToolJob, interval: float = 10.0):
+    """为长批量任务启动 10s 心跳；无 task_id 时返回 None。"""
+    if not task_id:
+        return None
+    try:
+        return asyncio.create_task(_heartbeat(job.job_id, task_id, interval))
+    except RuntimeError:
+        return None
+
+
+def stop_heartbeat(task) -> None:
+    if task is not None:
+        task.cancel()

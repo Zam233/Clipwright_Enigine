@@ -222,6 +222,12 @@ async def review_task(task_id: str, request: Request) -> dict:
     return build_review(task)
 
 
+@router.post("/{task_id}/review")
+async def review_task_post(task_id: str, request: Request) -> dict:
+    """PRD R10 的 POST 入口别名；与 GET 快照同义。"""
+    return await review_task(task_id, request)
+
+
 @router.post("/{task_id}/review/interview")
 async def interview_task(task_id: str, payload: ReviewInterviewBody,
                          request: Request) -> dict:

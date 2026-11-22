@@ -116,6 +116,13 @@ def preflight(stage: str, *, task: Any, board: dict[str, Any] | None = None,
         }]
 
 
+def validate_agent_inputs(stage: str, inputs: dict[str, Any] | None = None, *,
+                          task: Any, board: dict[str, Any] | None = None
+                          ) -> list[dict[str, Any]]:
+    """R7 公开入口：派发前校验阶段 inputs，返回可读错误列表。"""
+    return preflight(stage, task=task, board=board, inputs=inputs or {})
+
+
 def validate(stage: str, inputs: dict[str, Any],
              board: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """校验主 agent 显式给的 inputs；返回 `needs[]`（空列表 = 齐了）。

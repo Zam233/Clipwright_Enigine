@@ -254,10 +254,14 @@ class ImageGenerateBatchTool(BaseTool):
 
         service = ImageGenerationService(root)
         job = tool_jobs.create("image_generate_batch", len(clean))
-        outcomes = await service.generate_many(
-            prompts=clean, size=size, n=n, model=model,
-            source_id=source_id, seed=seed, concurrency=concurrency,
-        )
+        heartbeat = tool_jobs.start_heartbeat(task_id, job)
+        try:
+            outcomes = await service.generate_many(
+                prompts=clean, size=size, n=n, model=model,
+                source_id=source_id, seed=seed, concurrency=concurrency,
+            )
+        finally:
+            tool_jobs.stop_heartbeat(heartbeat)
         items = [{"index": i, **o.as_dict()} for i, o in enumerate(outcomes)]
         progress = {"ok": 0, "failed": 0}
         for item in items:

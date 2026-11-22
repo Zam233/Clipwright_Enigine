@@ -38,15 +38,30 @@ class QualityReportTool(BaseTool):
         "type": "object",
         "properties": {
             "max_chars": {"type": "integer", "default": 6000, "minimum": 500, "maximum": 20000},
+            "task_id": {"type": "string"},
             "project_id": {"type": "string"},
             "workspace_root": {"type": "string"},
         },
     }
 
     async def execute(
-        self, max_chars: int = 6000,
+        self, max_chars: int = 6000, task_id: str = "",
         project_id: str = "", workspace_root: str = "", **kwargs: Any,
     ) -> ToolExecResult:
+        if task_id:
+            try:
+                from clipwright.services import task_blackboard as _bb
+
+                board = _bb.get(str(task_id)) or {}
+                issues = board.get("issues")
+                if isinstance(issues, list):
+                    return ToolExecResult(
+                        status=ToolStatus.SUCCESS, tool_name=self.name,
+                        output={"source": "blackboard", "task_id": task_id,
+                                "issues": issues[:200], "passed": not issues},
+                    )
+            except Exception:  # noqa: BLE001
+                pass
         root = _root(project_id, workspace_root)
         if root is None:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,

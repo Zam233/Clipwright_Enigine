@@ -14,6 +14,7 @@ from pathlib import Path
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
 from clipwright.services import task_blackboard as bb
+from clipwright.services import tool_jobs
 from clipwright.services.intent_apply import (
     PatchOp,
     PatchPlan,
@@ -292,6 +293,7 @@ class TimelineInsertImagesTool(BaseTool):
         if len(rows) > 50:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error=f"items 最多 50 项（收到 {len(rows)}）")
+        job = tool_jobs.create("timeline_insert_images", len(rows))
         root = _resolve_root(project_id, workspace_root)
         try:
             timeline, key = _load_timeline(tid)
@@ -337,19 +339,21 @@ class TimelineInsertImagesTool(BaseTool):
             for item in results:
                 if item["status"] == "queued":
                     item["status"] = "preview"
+            tool_jobs.finish(job.job_id, failed=0)
             return ToolExecResult(
                 status=ToolStatus.SUCCESS, tool_name=self.name,
-                output={"dry_run": True, "source_key": key, "items": results,
-                        "report": report.model_dump(),
+                output={"job_id": job.job_id, "dry_run": True, "source_key": key,
+                        "items": results, "report": report.model_dump(),
                         "problems": [p.model_dump() for p in report.problems]},
             )
 
         new_timeline, report = apply_patch(timeline, plan)
         if report.has_errors():
+            tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
             return ToolExecResult(
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="补丁未执行（存在硬错误）",
-                output={"items": results,
+                output={"job_id": job.job_id, "items": results,
                         "problems": [p.model_dump() for p in report.problems]},
             )
         try:
@@ -364,9 +368,10 @@ class TimelineInsertImagesTool(BaseTool):
             item["status"] = "ok"
             if pos < len(added):
                 item["clip_id"] = str(added[pos])
+        tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
-            output={"items": results, "added_clip_ids": added,
+            output={"job_id": job.job_id, "items": results, "added_clip_ids": added,
                     "clips_before": report.clips_before,
                     "clips_after": report.clips_after,
                     "warnings": [p.model_dump() for p in report.problems

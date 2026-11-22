@@ -184,6 +184,7 @@ class GenerateMGBatchTool(BaseTool):
                     }
 
         job = tool_jobs.create("generate_mg_batch", len(rows))
+        heartbeat = tool_jobs.start_heartbeat(task_id, job)
         progress = {"ok": 0, "failed": 0}
 
         async def _tracked(index: int, row: dict[str, Any]) -> dict[str, Any]:
@@ -197,7 +198,10 @@ class GenerateMGBatchTool(BaseTool):
             tool_jobs.emit_progress(task_id, job)
             return result
 
-        results = await asyncio.gather(*[_tracked(i, r) for i, r in enumerate(rows)])
+        try:
+            results = await asyncio.gather(*[_tracked(i, r) for i, r in enumerate(rows)])
+        finally:
+            tool_jobs.stop_heartbeat(heartbeat)
         ok_count = sum(1 for x in results if x["status"] == "ok")
         tool_jobs.finish(job.job_id, failed=len(results) - ok_count,
                          error="" if ok_count else "所有 MG 生成任务均失败")

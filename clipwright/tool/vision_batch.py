@@ -31,6 +31,7 @@ def _cache_key(asset: dict[str, Any], scene_context: dict[str, Any], frame_count
         asset.get("asset_id") or asset.get("url") or asset.get("local_path") or "",
         asset.get("url") or asset.get("local_path") or "",
         int(frame_count or 3),
+        asset.get("source_fps") or asset.get("fps") or 0,
         scene_context.get("title") or "",
         scene_context.get("keywords") or [],
         scene_context.get("description") or "",
@@ -69,6 +70,8 @@ class VisionBatchTool(BaseTool):
             },
             "frame_count": {"type": "integer", "default": 3, "minimum": 1, "maximum": 6},
             "concurrency": {"type": "integer", "default": 4, "minimum": 1, "maximum": 8},
+            "timeout_sec": {"type": "number", "default": 90},
+            "max_retries": {"type": "integer", "default": 0, "minimum": 0, "maximum": 2},
             "task_id": {"type": "string"},
         },
         "required": ["assets"],
@@ -84,6 +87,8 @@ class VisionBatchTool(BaseTool):
         scene_context: dict[str, Any] | None = None,
         frame_count: int = 3,
         concurrency: int = 4,
+        timeout_sec: float = 90.0,
+        max_retries: int = 0,
         task_id: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
@@ -108,7 +113,9 @@ class VisionBatchTool(BaseTool):
         frames = max(1, min(6, int(frame_count or 3)))
         sem = asyncio.Semaphore(max(1, min(8, int(concurrency or 4))))
         job = tool_jobs.create("vision_llm_batch", len(rows))
+        heartbeat = tool_jobs.start_heartbeat(task_id, job)
         progress = {"ok": 0, "failed": 0}
+        metrics = {"cache_hits": 0, "cache_misses": 0, "retries": 0}
 
         async def _one(index: int, asset: dict[str, Any]) -> dict[str, Any]:
             if tool_jobs.is_cancelled(job.job_id):
@@ -117,12 +124,27 @@ class VisionBatchTool(BaseTool):
             cached = _CACHE.get(key)
             if cached is not None:
                 _CACHE.move_to_end(key)
+                metrics["cache_hits"] += 1
                 return {"index": index, "cached": True, **cached}
+            metrics["cache_misses"] += 1
             async with sem:
                 try:
-                    res = await scorer.execute(
-                        asset=asset, scene_context=ctx, frame_count=frames,
-                    )
+                    res = None
+                    last_exc: Exception | None = None
+                    for attempt in range(max(0, min(2, int(max_retries))) + 1):
+                        try:
+                            res = await asyncio.wait_for(
+                                scorer.execute(asset=asset, scene_context=ctx,
+                                               frame_count=frames),
+                                timeout=max(1.0, float(timeout_sec or 90.0)),
+                            )
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            last_exc = exc
+                            if attempt < max_retries:
+                                metrics["retries"] += 1
+                    if res is None:
+                        raise last_exc or RuntimeError("vision timeout")
                     out = dict(getattr(res, "output", None) or {})
                     if str(getattr(res, "status", "")) not in ("success", "ok"):
                         return {"index": index, "status": "failed",
@@ -156,7 +178,10 @@ class VisionBatchTool(BaseTool):
             tool_jobs.emit_progress(task_id, job)
             return result
 
-        items = await asyncio.gather(*[_tracked(i, a) for i, a in enumerate(rows)])
+        try:
+            items = await asyncio.gather(*[_tracked(i, a) for i, a in enumerate(rows)])
+        finally:
+            tool_jobs.stop_heartbeat(heartbeat)
         ok = sum(1 for x in items if x.get("status") == "ok")
         tool_jobs.finish(job.job_id, failed=len(items) - ok,
                          error="" if ok else "所有候选视觉评分失败")
@@ -168,5 +193,6 @@ class VisionBatchTool(BaseTool):
                 "job_id": job.job_id,
                 "items": items,
                 "summary": {"total": len(items), "ok": ok, "failed": len(items) - ok},
+                "metrics": dict(metrics),
             },
         )

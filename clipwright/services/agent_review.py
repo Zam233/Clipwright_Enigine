@@ -53,6 +53,7 @@ def build_review(task: Any) -> dict[str, Any]:
         logger.warning("复盘 run 读取失败 %s: %s", tid, exc)
 
     tool_counter: Counter[str] = Counter()
+    tool_calls: list[dict[str, Any]] = []
     event_types: Counter[str] = Counter()
     try:
         for e in task_events.events(tid):
@@ -61,6 +62,10 @@ def build_review(task: Any) -> dict[str, Any]:
             tool = str(detail.get("tool") or "")
             if tool:
                 tool_counter[tool] += 1
+                if len(tool_calls) < 200:
+                    tool_calls.append({"type": str(getattr(e, "type", "") or ""),
+                                       "tool": tool,
+                                       "detail": detail})
     except Exception as exc:  # noqa: BLE001
         logger.warning("复盘事件读取失败 %s: %s", tid, exc)
 
@@ -77,6 +82,7 @@ def build_review(task: Any) -> dict[str, Any]:
         "runs": runs,
         "events": {"total": sum(event_types.values()), "by_type": dict(event_types)},
         "tools": dict(tool_counter.most_common(30)),
+        "tool_calls": tool_calls,
         "blackboard_keys": sorted(board.keys()),
         "reports": _report_files(task),
         "notes": [

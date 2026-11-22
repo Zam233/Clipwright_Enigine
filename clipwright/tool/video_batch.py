@@ -129,6 +129,7 @@ class VideoTrimBatchTool(BaseTool):
                     }
 
         job = tool_jobs.create("video_trim_batch", len(rows))
+        heartbeat = tool_jobs.start_heartbeat(task_id, job)
         progress = {"ok": 0, "failed": 0}
 
         async def _tracked(index: int, row: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +143,10 @@ class VideoTrimBatchTool(BaseTool):
             tool_jobs.emit_progress(task_id, job)
             return result
 
-        results = await asyncio.gather(*[_tracked(i, r) for i, r in enumerate(rows)])
+        try:
+            results = await asyncio.gather(*[_tracked(i, r) for i, r in enumerate(rows)])
+        finally:
+            tool_jobs.stop_heartbeat(heartbeat)
         for row, result in zip(rows, results):
             if result.get("status") == "ok" and result.get("output_path"):
                 source = str(row.get("input_path") or row.get("asset") or "")
