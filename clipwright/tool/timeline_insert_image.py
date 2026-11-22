@@ -302,6 +302,7 @@ class TimelineInsertImagesTool(BaseTool):
             return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
                                   output=dict(_BATCH_CACHE[idempotency_key]))
         job = tool_jobs.create("timeline_insert_images", len(rows))
+        heartbeat = tool_jobs.start_heartbeat(task_id, job)
         root = _resolve_root(project_id, workspace_root)
         try:
             timeline, key = _load_timeline(tid)
@@ -348,6 +349,7 @@ class TimelineInsertImagesTool(BaseTool):
                 if item["status"] == "queued":
                     item["status"] = "preview"
             tool_jobs.finish(job.job_id, failed=0)
+            tool_jobs.stop_heartbeat(heartbeat)
             return ToolExecResult(
                 status=ToolStatus.SUCCESS, tool_name=self.name,
                 output=attach_batch_contract({
@@ -360,6 +362,7 @@ class TimelineInsertImagesTool(BaseTool):
         new_timeline, report = apply_patch(timeline, plan)
         if report.has_errors():
             tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
+            tool_jobs.stop_heartbeat(heartbeat)
             return ToolExecResult(
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="补丁未执行（存在硬错误）",

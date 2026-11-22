@@ -222,6 +222,7 @@ class ArtifactSearchTool(BaseTool):
         "properties": {
             "query": {"type": "string", "description": "搜索关键词（大小写不敏感）"},
             "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+            "cursor": {"type": "integer", "default": 0, "minimum": 0},
             "project_id": {"type": "string"},
             "workspace_root": {"type": "string"},
         },
@@ -229,7 +230,7 @@ class ArtifactSearchTool(BaseTool):
     }
 
     async def execute(
-        self, query: str = "", limit: int = 20,
+        self, query: str = "", limit: int = 20, cursor: int = 0,
         project_id: str = "", workspace_root: str = "", **kwargs: Any,
     ) -> ToolExecResult:
         root = _resolve_root(project_id, workspace_root)
@@ -242,10 +243,10 @@ class ArtifactSearchTool(BaseTool):
                                   error="query 不能为空")
         cap = max(1, min(50, int(limit or 20)))
         base = root / "artifacts"
-        items: list[dict[str, Any]] = []
+        matches: list[dict[str, Any]] = []
         if base.is_dir():
             for path in sorted(base.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-                if len(items) >= cap:
+                if len(matches) >= 500:
                     break
                 try:
                     raw = path.read_text(encoding="utf-8", errors="ignore")
@@ -259,15 +260,19 @@ class ArtifactSearchTool(BaseTool):
                 except Exception:  # noqa: BLE001
                     preview = "（无法解析）"
                 stat = path.stat()
-                items.append({
+                matches.append({
                     "artifact": path.stem, "path": str(path),
                     "bytes": stat.st_size, "mtime": int(stat.st_mtime),
                     "preview": preview,
                 })
+        start = max(0, int(cursor or 0))
+        items = matches[start:start + cap]
+        next_cursor = start + cap if start + cap < len(matches) else 0
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
-            output={"query": query, "count": len(items), "items": items,
-                    "truncated": len(items) >= cap},
+            output={"query": query, "total": len(matches), "count": len(items),
+                    "items": items, "next_cursor": next_cursor,
+                    "truncated": next_cursor != 0},
         )
 
 

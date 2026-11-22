@@ -1110,6 +1110,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         from clipwright.plugins.prompt_overrides import resolve_constant
 
         system_prompt = resolve_constant("EDIT_PROFILE_SYSTEM")
+        system_prompt += "\n\n" + resolve_constant("EDIT_BATCH_GUIDE")
         # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
         system_prompt += self._quality_hint
         # V1/V15：类型身份 + 剪辑阶段规范（含反模式），固定序注入

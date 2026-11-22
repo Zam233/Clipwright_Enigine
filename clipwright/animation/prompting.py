@@ -227,7 +227,10 @@ def compose_mg_system_prompt(
         ANIMATION_PROMPT_CORE, ANIMATION_MOTION_CONTRACT, skill_block, brief_block, plan_block, rules, style, caps,
         ANIMATION_SELF_CHECK, ANIMATION_EXAMPLE,
     ])
-    return body + MG_ORCHESTRATION_CONSTRAINTS + MG_STRICT_JSON_OUTPUT
+    from clipwright.prompts.mg import MG_BATCH_CONTRACT
+
+    return (body + MG_ORCHESTRATION_CONSTRAINTS + MG_BATCH_CONTRACT
+            + MG_STRICT_JSON_OUTPUT)
 
 
 def compose_critique_check_items() -> str:

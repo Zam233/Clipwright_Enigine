@@ -38,6 +38,7 @@ class ToolJob:
 
 
 _JOBS: OrderedDict[str, ToolJob] = OrderedDict()
+_TASKS: dict[str, Any] = {}
 
 
 def create(kind: str, total: int) -> ToolJob:
@@ -85,10 +86,20 @@ def is_cancelled(job_id: str) -> bool:
     return job is not None and job.status == "cancelled"
 
 
+def register_task(job_id: str, task: Any) -> None:
+    _TASKS[str(job_id)] = task
+
+
 def cancel(job_id: str, reason: str = "cancelled") -> dict[str, Any] | None:
     job = _JOBS.get(str(job_id))
     if job is None:
         return None
+    task = _TASKS.pop(str(job_id), None)
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:  # noqa: BLE001
+            pass
     job.status = "cancelled"
     job.error = str(reason)[:500]
     job.updated_at = time.time()

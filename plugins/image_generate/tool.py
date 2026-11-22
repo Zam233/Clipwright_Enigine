@@ -267,6 +267,7 @@ class ImageGenerateBatchTool(BaseTool):
                 workspace_root=str(root), _job_id=job.job_id,
             ))
             _BG_TASKS[job.job_id] = task
+            tool_jobs.register_task(job.job_id, task)
             return ToolExecResult(
                 status=ToolStatus.SUCCESS, tool_name=self.name,
                 output={"job_id": job.job_id, "status": "running",

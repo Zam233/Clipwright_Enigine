@@ -169,6 +169,12 @@ class GenerateMGBatchTool(BaseTool):
                             height=int(row["height"]) if row.get("height") else None,
                         )
                         ok = bool(result.get("success", True)) and bool(result.get("mg_def"))
+                    # R4：写入时间线前再过一次 validator（生成器可能已修复，但这里给最终 gate）
+                    if ok and isinstance(result.get("mg_def"), dict):
+                        _valid, _issues = validate_mg_json(result["mg_def"])
+                        if not _valid:
+                            ok = False
+                            result["issues"] = list(result.get("issues") or []) + _issues
                     return {
                         "index": index,
                         "status": "ok" if ok else "failed",

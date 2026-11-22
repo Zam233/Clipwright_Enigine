@@ -19,7 +19,13 @@ class _FakeMG:
         self.calls += 1
         if "bad" in description:
             raise RuntimeError("mg provider failed")
-        return {"success": True, "mg_def": {"description": description}, "method": "test"}
+        return {"success": True, "mg_def": {
+            "animation_id": "a", "duration_sec": 3, "width": 1920, "height": 1080,
+            "elements": [{"type": "text", "content": "A", "x": "center", "y": "center",
+                          "font_size": 80, "font_color": "#fff",
+                          "keyframes": [{"time": 0, "opacity": 0},
+                                        {"time": 0.5, "opacity": 1}]}],
+        }, "method": "test"}
 
 
 def test_generate_mg_batch_partial_failure(monkeypatch) -> None:
@@ -32,7 +38,7 @@ def test_generate_mg_batch_partial_failure(monkeypatch) -> None:
     ))
     assert str(out.status) == "success"
     assert out.output["summary"] == {"total": 2, "ok": 1, "failed": 1}
-    assert out.output["items"][0]["mg_def"]["description"] == "good"
+    assert out.output["items"][0]["mg_def"]["animation_id"] == "a"
     assert out.output["items"][1]["status"] == "failed"
     assert fake.calls == 2
 
