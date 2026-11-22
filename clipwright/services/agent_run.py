@@ -456,11 +456,13 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
             _bind_alias(str(result.outputs["subagent_id"]), run_id)
     except Exception as exc:  # noqa: BLE001 — 派发异常也要结构化返回
         logger.warning("agent_run 失败 %s/%s: %s", spec.kind, spec.stage, exc)
+        _cat = str(getattr(exc, "category", "") or "internal_defect")
         result = _ra.build(
             run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
             status="failed", attempt=attempt, task_id=str(getattr(task, "id", "") or ""),
             trace_id=trace_id, error=f"{type(exc).__name__}: {exc}",
-            failure={"category": "internal_defect", "retryable": "needs_human",
+            failure={"category": _cat,
+                     "retryable": "retry_same" if _cat == "provider_error" else "needs_human",
                      "blocking_point": str(exc)[:200], "evidence": []},
         )
     result.duration_ms = result.duration_ms or int((time.monotonic() - started) * 1000)

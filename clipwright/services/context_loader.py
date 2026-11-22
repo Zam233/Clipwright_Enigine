@@ -473,6 +473,8 @@ def _instruction_digest(task: Any) -> str:
         prev_terminal = str(extra.get("previous_terminal_reason") or "")
         prev_blocker = str(extra.get("previous_blocker_code") or "")
         prev_closeout = str(extra.get("previous_closeout_status") or "")
+        resume = dict(extra.get("resume") or {}) if isinstance(extra.get("resume"), dict) else {}
+        done_stages = [str(s) for s in (resume.get("completed_stages") or []) if str(s)]
     except Exception:  # noqa: BLE001
         return ""
     if not text:
@@ -481,6 +483,9 @@ def _instruction_digest(task: Any) -> str:
     if prev_task:
         suffix = (f"\n（上一轮任务 {prev_task} 已结束；这是同一会话的**续跑**，"
                   "不是新项目：接着做完没做完的事，不要从头重做）")
+        if done_stages:
+            suffix += ("\n（已完成阶段：" + "、".join(done_stages) +
+                       "；黑板产物已继承，先读产物，不要重复派这些阶段）")
         # devplan T3.4：把"上一轮为什么结束"说给新任务听。
         # capped 尤其要说清楚——它意味着**有交付但没做完**，最容易让模型误判成
         # "上一轮已经完成了"，于是重新规划一遍并覆盖已有产物。
