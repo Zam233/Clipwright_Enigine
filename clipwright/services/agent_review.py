@@ -62,7 +62,7 @@ def build_review(task: Any) -> dict[str, Any]:
             tool = str(detail.get("tool") or "")
             if tool:
                 tool_counter[tool] += 1
-                if len(tool_calls) < 200:
+                if len(tool_calls) < 2000:
                     tool_calls.append({"type": str(getattr(e, "type", "") or ""),
                                        "tool": tool,
                                        "detail": detail})
