@@ -54,7 +54,7 @@ class QualityReportTool(BaseTool):
         base = root / "reports"
         candidates = sorted(
             (p for p in base.glob("*.md") if "quality" in p.name.lower()),
-            key=lambda p: p.stat().st_mtime, reverse=True,
+            key=lambda p: (p.stat().st_mtime, p.name), reverse=True,
         ) if base.is_dir() else []
         if not candidates:
             return ToolExecResult(
