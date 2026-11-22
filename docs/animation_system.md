@@ -321,3 +321,11 @@ QualityAgent 在动画编排之后对时间线做内容级校验，新增三类�
 - [架构总览](structure.md) — AnimationAgent 在管线中的位置
 - [Agent 工作流](workflow.md) — 动画编排流程详解
 - [开发指南](development.md) — 新增动画类型
+
+
+## 批量预生成（2026-11）
+
+AnimationAgent 在逻辑动画并发前，把 `mg_dynamic` 与 typed 任务汇总为
+`generate_mg_batch`：每 12 段分块，全部成功结果按 `clip_id` 缓存；第二阶段
+`_handle_llm_mg` / `_handle_typed_animation` 优先消费缓存，批量失败或时长不匹配时
+回退原 `MGGenerator` 路径。图片/事实片段仍按原路径处理。
