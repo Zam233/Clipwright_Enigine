@@ -165,6 +165,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/task/{task_id}/runs/{run_id}/replay` | 真重跑；`refresh=true`，生成 `#r…` 新 `run_id`；终态任务 409 |
 | `GET /api/task/{task_id}/tool-calls?stage=&attempt=&limit=&offset=` | 读盘上的全量工具 transcript |
 | `GET /api/task/{task_id}/review` | **终态任务只读复盘**：任务/runs/事件统计/工具统计/黑板键/报告；不 resume、不派发、不写黑板 |
+| `POST /api/task/{task_id}/review/interview` | 在只读快照上按角色访谈（body `{roles?:[]}`）；只读、不调用工具、不写任务 |
 
 事件契约（前端按此渲染，不得只发分类字符串）：
 

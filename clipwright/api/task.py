@@ -81,6 +81,11 @@ class AnswerBody(BaseModel):
     text: Optional[str] = Field(default=None, max_length=2000)
 
 
+class ReviewInterviewBody(BaseModel):
+    """只读复盘访谈：可选角色白名单。"""
+    roles: list[str] = Field(default_factory=list)
+
+
 class InjectBody(BaseModel):
     text: str = Field(description="人工注入的指令或修正")
 
@@ -215,6 +220,22 @@ async def review_task(task_id: str, request: Request) -> dict:
     from clipwright.services.agent_review import build_review
 
     return build_review(task)
+
+
+@router.post("/{task_id}/review/interview")
+async def interview_task(task_id: str, payload: ReviewInterviewBody,
+                         request: Request) -> dict:
+    """在只读复盘快照上按角色访谈；不 resume、不派发、不写任务。"""
+    _enforce_task_owner(request, task_id)
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    from clipwright.services.agent_interview import interview
+    from clipwright.services.agent_review import build_review
+
+    return await interview(
+        build_review(task), roles=(payload.roles or None),
+    )
 
 
 @router.get("/{task_id}/events")
