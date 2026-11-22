@@ -14,6 +14,7 @@ from typing import Any
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.animation.mg.validator import validate_mg_json
+from clipwright.tool.animation_validate import color_issues
 from clipwright.animation.mg_renderer import MGRenderer
 from clipwright.services import tool_jobs
 from clipwright.tool.batch_contract import attach_batch_contract
@@ -125,6 +126,8 @@ class GenerateMGBatchTool(BaseTool):
                     supplied = row.get("mg_def")
                     if isinstance(supplied, dict) and supplied:
                         valid, issues = validate_mg_json(supplied)
+                        issues = list(issues) + color_issues(supplied)
+                        valid = valid and not issues
                         result = {"success": valid, "mg_def": supplied if valid else None,
                                   "issues": issues, "method": "supplied",
                                   "error": "" if valid else "; ".join(issues[:3])}
@@ -172,7 +175,8 @@ class GenerateMGBatchTool(BaseTool):
                     # R4：写入时间线前再过一次 validator（生成器可能已修复，但这里给最终 gate）
                     if ok and isinstance(result.get("mg_def"), dict):
                         _valid, _issues = validate_mg_json(result["mg_def"])
-                        if not _valid:
+                        _issues = list(_issues) + color_issues(result["mg_def"])
+                        if not _valid or _issues:
                             ok = False
                             result["issues"] = list(result.get("issues") or []) + _issues
                     return {

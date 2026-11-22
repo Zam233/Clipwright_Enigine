@@ -192,6 +192,7 @@ class TimelineInsertImageTool(BaseTool):
             try:
                 report = validate_patch(timeline, plan)
             except Exception as exc:  # noqa: BLE001
+                tool_jobs.stop_heartbeat(heartbeat)
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"预检失败: {exc}")
             return ToolExecResult(
@@ -307,10 +308,12 @@ class TimelineInsertImagesTool(BaseTool):
         try:
             timeline, key = _load_timeline(tid)
         except Exception as exc:  # noqa: BLE001
+            tool_jobs.stop_heartbeat(heartbeat)
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error=str(exc))
         owner = bb.owner_of(tid, "timeline")
         if owner and owner != "edit":
+            tool_jobs.stop_heartbeat(heartbeat)
             return ToolExecResult(
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error=(f"时间线当前由 {owner} 阶段写入（已定稿），不能再插图片；"
@@ -334,6 +337,7 @@ class TimelineInsertImagesTool(BaseTool):
                 results.append({"index": i, "status": "failed", "error": str(exc)})
 
         if not operations:
+            tool_jobs.stop_heartbeat(heartbeat)
             return ToolExecResult(
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="所有 item 都无效", output={"items": results},
@@ -372,6 +376,7 @@ class TimelineInsertImagesTool(BaseTool):
         try:
             bb.put(tid, "timeline", new_timeline.model_dump(mode="json"), by="edit")
         except Exception as exc:  # noqa: BLE001 — 黑板拒绝时如实回报
+            tool_jobs.stop_heartbeat(heartbeat)
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error=f"写回黑板失败: {exc}")
 
