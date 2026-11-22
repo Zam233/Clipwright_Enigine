@@ -1212,10 +1212,13 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         # 选择逻辑保持「原顺序第一个 >0.3 命中」，与串行版结果一致。
         # _validate 提升到场景级，供首轮与 C4c 重选复用同一校验路径。
         validate_sem = asyncio.Semaphore(4)
+        batch_scores: dict[int, float] = {}
 
-        async def _validate(r):
+        async def _validate(r, batch_index: int = -1):
             async with validate_sem:
                 if use_vision_llm:
+                    if batch_index in batch_scores:
+                        return (r, batch_scores[batch_index])
                     asset_obj = r.asset if hasattr(r, 'asset') else r
                     score = await self._validate_via_vision_llm(
                         asset_obj,
@@ -1245,8 +1248,42 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         # × （首轮 + 重选）会把 material 阶段顶到 15 分钟超时（实测超时后主 agent
         # 重试一次，白烧 30 分钟）。有视觉打分时只看前 2 个，够排序用。
         top_candidates = all_results[:2] if use_vision_llm else all_results[:8]
+        if use_vision_llm and top_candidates:
+            # 一次批量评分替代逐候选调用；失败项留空，下面仍走逐候选兜底。
+            try:
+                payload = []
+                for r in top_candidates:
+                    a = r.asset if hasattr(r, "asset") else r
+                    if isinstance(a, dict):
+                        payload.append(a)
+                    else:
+                        payload.append({
+                            "asset_id": getattr(a, "id", ""),
+                            "url": getattr(a, "url", ""),
+                            "local_path": getattr(a, "local_path", ""),
+                        })
+                batch = await self.call_tool(
+                    "vision_score_batch",
+                    assets=payload,
+                    scene_context={
+                        "title": scene_title,
+                        "keywords": scene_keywords,
+                        "description": description,
+                        "narration_text": narration_text,
+                        "material_intent": material_intent,
+                    },
+                    frame_count=vision_frame_count,
+                )
+                if str(batch.status) in ("success", "ok"):
+                    for item in (batch.output or {}).get("items") or []:
+                        if int(item.get("index", -1)) >= 0 and item.get("status") == "ok":
+                            batch_scores[int(item["index"])] = float(item.get("score", 0.5))
+            except Exception as exc:  # noqa: BLE001 — 批量失败退回逐候选
+                logger.debug("MaterialAgent: 批量视觉评分失败，退回逐候选: %s", exc)
         if top_candidates:
-            scores = await asyncio.gather(*(_validate(r) for r in top_candidates))
+            scores = await asyncio.gather(
+                *(_validate(r, pos) for pos, r in enumerate(top_candidates))
+            )
             for s in scores:
                 if s is not None:
                     validated.append(s)

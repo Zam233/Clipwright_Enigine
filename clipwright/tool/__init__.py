@@ -78,6 +78,7 @@ from clipwright.tool.workspace_search import (
 )
 from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
+from clipwright.tool.vision_batch import VisionBatchTool
 
 
 def register_builtin_tools() -> None:
@@ -117,6 +118,7 @@ def register_builtin_tools() -> None:
         SceneDetectTool(),
         SemanticMatchTool(),
         VisionLLMTool(),
+        VisionBatchTool(),
         FaceDetectTool(),
         BackgroundRemoveTool(),
         # ── 特效 ──

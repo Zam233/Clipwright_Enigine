@@ -560,6 +560,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `image_generate` | `plugins/image_generate` | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
 | `timeline_insert_image` | Engine 内置 | — | task_id, asset_ref（工作区相对路径）, position（start/end/after:<clip_id>）, duration_sec, motion（ken_burns/still）；走补丁引擎，dry_run 可预览 |
 | `timeline_insert_images` | Engine 内置 | — | task_id, items[](asset_ref/position/duration_sec/motion)；批量插入，逐项返回 clip_id 与失败原因，dry_run 可预览 |
+| `vision_llm_batch` | Engine 内置 | 由 `vision_score` 能力决定（vision_llm 或插件接管） | assets[] + scene_context + frame_count + concurrency；批量视觉评分，单项失败隔离，带缓存 |
 
 `image_generate` / `image_generate_batch` 由 `image_generate` 插件提供；未安装插件或没有图像源时**不出现在工具面**，Engine 不保留空壳工具。生成后自动注册该工作区的图片素材源，但**不会自动进入时间线**，需要 `timeline_insert_image` / `timeline_insert_images`。
 

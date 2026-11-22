@@ -28,6 +28,7 @@ CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     # 素材 / 质检
     "frame_check": ("frame_validator",),
     "vision_score": ("vision_llm",),
+    "vision_score_batch": ("vision_llm_batch",),
     "material_search": ("material_filter",),
     "material_match": ("semantic_match",),
     "scene_detect": ("scene_detect",),

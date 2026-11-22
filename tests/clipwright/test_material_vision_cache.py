@@ -18,6 +18,10 @@ from clipwright.agents.material_agent import (
 @pytest.fixture(autouse=True)
 def _clear():
     clear_material_vision_cache()
+    # 本文件直接测试能力解析；测试进程不启动 PluginLoader，需显式注册内置工具。
+    from clipwright.tool import register_builtin_tools
+
+    register_builtin_tools()
     yield
     clear_material_vision_cache()
 
