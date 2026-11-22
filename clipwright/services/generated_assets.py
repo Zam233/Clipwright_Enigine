@@ -24,6 +24,7 @@ from clipwright.material.base import MaterialSource
 from clipwright.schema.material import MaterialAsset, MaterialType
 
 _TOKEN_SPLIT = re.compile(r"[\s,，。;；、/|()（）\[\]]+")
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 _MAX_HISTORY = 200
 
@@ -90,22 +91,62 @@ def load_generated_history(plugin_id: str) -> list[dict[str, Any]]:
         return []
 
 
-def generated_image_entries() -> list[dict[str, Any]]:
-    """AI 生成图片历史 → AnimationAgent image_assets 结构（[{path, tags, description}]）。
+def workspace_image_entries(workspace_root: str | Path | None) -> list[dict[str, Any]]:
+    """工作区 ``materials/image/`` 里的图片 → 子 Agent image_assets 结构。
 
-    仅返回仍存在的本地文件；无历史时返回 []（零变化）。
+    新 ``image_generate`` 工具写工作区，不再写旧 ``PluginData/.../generated.json``；
+    只读目录里的真实文件，返回 ``{path, tags, description, asset_id}``。没有工作区
+    或目录不存在时返回 []（零变化）。
+    """
+    if not workspace_root:
+        return []
+    root = Path(str(workspace_root)).expanduser()
+    image_dir = root / "materials" / "image"
+    if not image_dir.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for p in sorted(image_dir.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        stem = p.stem.replace("_", " ").strip()
+        out.append({
+            "path": str(p),
+            "asset_id": p.stem,
+            "tags": sorted(_tokenize(stem))[:8],
+            "description": stem[:120],
+        })
+    return out
+
+
+def generated_image_entries(workspace_root: str | Path | None = None) -> list[dict[str, Any]]:
+    """AI 生成图片 → 子 Agent image_assets 结构（[{path, tags, description}]）。
+
+    同时覆盖旧 ``PluginData/plugins/ai_image_gen/generated.json`` 历史与工作区
+    ``materials/image/`` 新产物；按绝对路径去重，只返回仍存在的本地文件。
+    无历史/无工作区时返回 []（零变化）。
     """
     entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for e in load_generated_history("ai_image_gen"):
         path = str(e.get("path", ""))
         prompt = str(e.get("prompt", ""))
         if not path or not Path(path).exists():
             continue
+        key = str(Path(path).resolve())
+        if key in seen:
+            continue
+        seen.add(key)
         entries.append({
             "path": path,
             "tags": sorted(_tokenize(prompt))[:8],
             "description": prompt[:120],
         })
+    for entry in workspace_image_entries(workspace_root):
+        key = str(Path(str(entry["path"])).resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(entry)
     return entries
 
 

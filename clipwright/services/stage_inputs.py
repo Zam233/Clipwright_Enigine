@@ -231,6 +231,24 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
         pass
     vm = visual_ctx.visual_config
 
+    # 主 Agent 的 image_generate 产物只落在 materials/image/，不会自动进入
+    # candidate_clips。所有阶段都装配同一份 image_assets，避免只有 animation
+    # 能看到新图、edit/material 看不到（2026-11-22 实机）。
+    _image_assets: list[dict[str, Any]] = []
+    try:
+        from clipwright.services.generated_assets import generated_image_entries
+
+        _explicit_images = data.get("image_assets")
+        if isinstance(_explicit_images, list) and _explicit_images:
+            _image_assets = [x for x in _explicit_images if isinstance(x, dict)]
+        else:
+            _workspace_root = str((extra or {}).get("workspace_root") or "")
+            _image_assets = generated_image_entries(_workspace_root)
+    except Exception as exc:  # noqa: BLE001 — 图片索引失败不能阻断阶段
+        logger.warning("阶段输入：装配 image_assets 失败（按空处理）: %s", exc)
+    if isinstance(getattr(ctx, "extra_params", None), dict):
+        ctx.extra_params["image_assets"] = _image_assets
+
     def _cfg(key: str) -> dict[str, Any]:
         """配置类字段：黑板 → extra（配置通常由 API 透传，不进黑板）。"""
         value = data.get(key)
@@ -263,6 +281,8 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             "creative_brief": brief,
             "production_plan": plan,
             **data,
+            # 显式/工作区图片最后写入：黑板里即使有同名字段，也不能把新图覆盖掉。
+            "image_assets": _image_assets,
         }
 
     if stage == "structure":
@@ -276,6 +296,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             rag_context=data.get("rag_context", "") or extra.get("rag_context", "") or "",
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage in ("material", "edit"):
@@ -298,6 +319,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             material_plugin_config=_cfg("material_plugin_config"),
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage == "edit":
@@ -309,11 +331,11 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             candidate_clips=data.get("candidate_clips", []) or [],
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage == "animation":
         from clipwright.schema.agent import AnimationInput
-        from clipwright.services.generated_assets import generated_image_entries
         from clipwright.schema.timeline import Timeline
 
         return AnimationInput(
@@ -322,7 +344,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             visual_config=vm or data.get("visual_config", {}) or {},
             persona_prompt=visual_ctx.persona_prompt or data.get("persona_prompt"),
             vision_prompt=visual_ctx.vision_prompt or data.get("vision_prompt"),
-            image_assets=data.get("image_assets") or generated_image_entries(),
+            image_assets=data.get("image_assets") or _image_assets,
             retry_clip_ids=list(data.get("retry_clip_ids") or []),
             background_context=dict(data.get("background_context") or {}),
             creative_brief=brief,
@@ -338,6 +360,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             audio_config=_cfg("audio_config"),
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage == "quality":
@@ -350,6 +373,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
                          or dict((visual_ctx.persona_config or {}).get("constraints") or {})),
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     raise ValueError(f"未知阶段: {stage}")
