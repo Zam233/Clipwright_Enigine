@@ -499,11 +499,11 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 | WP8 job 基础设施 | 完成（REST + 事件流） | `028df72`、`caa8fc0`、`958200f`、`6a72f26` | 有界 job、逐项进度、取消感知、任务事件流 |
 | 调研 worker 工作区 | 完成 | `873ce41` | glob/tree/range 开放给 worker |
 
-仍未完成：
+收尾状态（后续 Goal 已完成）：
 
-- EditAgent 消费 `video_trim_batch`（当前仍逐 clip `video_trim`）；
-- AnimationAgent 消费 `generate_mg_batch`（当前仍逐段 `MGGenerator`）；
-- `image_generate_batch` 的 provider 原生 `generate_batch` 契约（当前插件内并发单张）。
+- EditAgent 已做 EDL 全段预取并消费 `video_trim_batch`（`e5eb6eb`）；
+- AnimationAgent 已对 `mg_dynamic` 与 typed 逻辑动画做 `generate_mg_batch` 预生成（`bf6a650`、`69540cc`）；
+- `image_generate_batch` 已走 provider 原生 `generate_batch`，失败逐项回退（`d0e066b`、`5349add`）。
 
 已完成但需注意：
 
