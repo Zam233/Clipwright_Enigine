@@ -171,6 +171,9 @@ class Settings(BaseSettings):
     agent_goal_v1: bool = True
     #: 同一 blocker 连续多少轮才允许宣告 blocked（照抄 DSH 的 3）
     agent_goal_blocked_after_rounds: int = 3
+    #: 质量门：final_timeline 已存在但 quality 未成功运行时，强制续跑一次；
+    #: 仍缺失则拒绝 done。测试 fixture 会显式关闭，避免每个 kernel 用例都派 quality。
+    agent_quality_gate: bool = True
 
     # --- 模型路由（PRD F8 / 开发计划 B4）---
     # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；

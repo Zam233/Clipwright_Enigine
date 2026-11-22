@@ -84,3 +84,12 @@ def _disable_kernel_recovery(monkeypatch, request):
     enabled = bool(request.node.get_closest_marker("enable_kernel_recovery"))
     monkeypatch.setattr(settings, "agent_kernel_recovery", enabled, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _disable_quality_gate(monkeypatch):
+    """单测默认关闭 quality 门：它会真的派 quality，取决于具体用例时间线。"""
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "agent_quality_gate", False, raising=False)
+    yield

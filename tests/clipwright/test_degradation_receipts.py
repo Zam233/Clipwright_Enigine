@@ -110,7 +110,8 @@ def test_accepted_receipt_allows_done(monkeypatch):
     task = _run_kernel(monkeypatch, ack=True)
     assert task.status == "done"
     assert task.finish.reason == "tool_loop_completed"
-    assert task.finish.unfinished == []
+    # quality 门开启后，收口报告会如实写 quality_not_run；这是预期事实，不是降级未处置
+    assert all("quality" in item for item in task.finish.unfinished)
 
 
 def test_warn_policy_keeps_done(monkeypatch):

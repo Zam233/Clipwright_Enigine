@@ -93,6 +93,14 @@ _MEMORY_LOADED: set[str] = set()
 #: 属于模型行为，不该直接判死刑：带着明确指令再推它一把，仍然出不来才判失败。
 _MAX_TIMELINE_CONTINUATIONS = 2
 _TIMELINE_CONTINUATIONS: dict[str, int] = {}
+#: quality 阶段已成功运行的任务（quality 门只推一次）
+_QUALITY_CONTINUATIONS: dict[str, int] = {}
+_QUALITY_CONTINUE_HINT = (
+    "\n\n## 质量门（必须遵守）\n"
+    "黑板里已有 `final_timeline`，但 quality 阶段还没有成功运行。\n"
+    "请派 `delegate_agent(stage=\"quality\")`，读取 `quality_report`，"
+    "确认 passed 后再 finish。质量未通过时不得宣称完成。"
+)
 
 # ── 降级决策守门（E2E 2026-10-29 用户裁定）──────────────────────────────
 # 「截断与回退不能被主 Agent 默认接受」：阶段内部一旦 note_degradation（LLM JSON
@@ -124,6 +132,21 @@ _FINAL_RECEIPT_HINT_TAIL = (
 )
 #: 允许 Kernel 补派的阶段（时间线生产者 + 素材/动画：它们最常上报可修降级）
 _TIMELINE_STAGE_FOR_RECOVERY = ("edit", "animation", "audio", "material")
+_QUALITY_STAGE = "quality"
+
+
+def _quality_ran(task_id: str) -> bool:
+    """quality 是否成功跑过（ok/degraded 都算跑过，failed 不算）。"""
+    try:
+        from clipwright.services import run_store as _rs
+
+        return any(
+            str(getattr(r, "stage", "") or "") == _QUALITY_STAGE
+            and str(getattr(r, "status", "") or "") in ("ok", "degraded")
+            for r in _rs.list_task(str(task_id))
+        )
+    except Exception:  # noqa: BLE001 — 查不到就按未跑处理，交给 gate
+        return False
 _DEGRADATION_CONTINUATIONS: dict[str, int] = {}
 #: 未处置降级：task_id → [degradation dict]
 _PENDING_DEGRADATIONS: dict[str, list[dict[str, Any]]] = {}
@@ -1475,6 +1498,21 @@ class AgentKernel:
                         gate_reason = "缺少可渲染时间线（final_timeline 为空）"
                     else:
                         _TIMELINE_CONTINUATIONS.pop(task.id, None)
+                        if (bool(getattr(settings, "agent_quality_gate", True))
+                                and not _quality_ran(task.id)):
+                            done = int(_QUALITY_CONTINUATIONS.get(task.id, 0))
+                            if done < 1:
+                                _QUALITY_CONTINUATIONS[task.id] = done + 1
+                                emit(task.id, "narration",
+                                     "质量门：final_timeline 已就绪，但 quality 尚未成功运行；"
+                                     "先派 quality 并读报告",
+                                     {"kind": "quality_gate_continue",
+                                      "attempt": done + 1}, span="kernel")
+                                return await self._run_tool_loop(
+                                    task, started=started, shadow=shadow,
+                                    extra_hint=_QUALITY_CONTINUE_HINT,
+                                )
+                            gate_reason = "quality_not_run"
                         # 注意：不要在这里清 `_KERNEL_RECOVERY`——循环会反复进这段
                         # （有 final_timeline 就走 else），清了等于把补派预算无限续，
                         # 造成 gate→补派→gate 的无限递归（实测 RecursionError）。
