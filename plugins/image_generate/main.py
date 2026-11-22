@@ -11,8 +11,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
-from typing import Any
+from typing import Any, Sequence
 
 import httpx
 
@@ -74,6 +75,7 @@ class OpenAICompatibleImageProvider:
             concurrency=2,
             cost_per_image_usd=None,
             size_dialect="wxh",
+            supports_batch=True,
         )
 
     def _apply_source_config(self, config: dict | None) -> None:
@@ -107,6 +109,12 @@ class OpenAICompatibleImageProvider:
             return resp.status_code not in (401, 403)
         except Exception:  # noqa: BLE001 — 探测失败一律 False
             return False
+
+    async def generate_batch(
+        self, requests: Sequence[ImageGenerationRequest],
+    ) -> list[list[GeneratedImage]]:
+        """OpenAI 兼容端点没有真正的多 prompt 请求：provider 层并发单张。"""
+        return list(await asyncio.gather(*(self.generate(r) for r in requests)))
 
     async def generate(self, request: ImageGenerationRequest) -> list[GeneratedImage]:
         self._configure(request)
