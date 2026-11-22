@@ -406,3 +406,11 @@ def test_network_env_is_stripped_by_default(monkeypatch):
         assert "MISSING" in out["outputTail"]
     finally:
         os.environ.pop("HTTP_PROXY", None)
+
+def test_require_approval_forces_low(monkeypatch):
+    from clipwright.config import settings
+
+    _assess(monkeypatch, risk="low")
+    monkeypatch.setattr(settings, "exec_require_approval", True, raising=False)
+    out = asyncio.run(gw.run_command("pl_force", 'python -c "print(1)"'))
+    assert out["status"] == "pending_approval"

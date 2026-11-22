@@ -107,8 +107,11 @@ class Settings(BaseSettings):
     agent_mode: Literal["off", "shadow", "on"] = "off"
     # --- Kernel Exec（PRD kernel-exec-approval）---
     kernel_exec_enabled: bool = False
-    exec_require_approval: bool = True
+    # 强制所有执行（含 low）都走授权；默认关闭，保留 auto_low 的 low 直跑。
+    exec_require_approval: bool = False
     exec_auto_low: bool = True
+    # auto / pwsh / powershell / bash / sh
+    exec_shell_profile: Literal["auto", "pwsh", "powershell", "bash", "sh"] = "auto"
     exec_shell_fallback: bool = True
     exec_history_limit: int = 20
     exec_approval_ttl_sec: float = 600.0

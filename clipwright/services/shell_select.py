@@ -27,7 +27,32 @@ def _which(*names: str) -> str:
     return ""
 
 
-def select_shell(*, fallback: bool = True) -> ShellSpec:
+def _explicit(profile: str, fallback: bool) -> ShellSpec | None:
+    name = str(profile or "auto").lower()
+    if name in ("", "auto"):
+        return None
+    exe = {"pwsh": ("pwsh.exe", "pwsh"),
+           "powershell": ("powershell.exe", "powershell"),
+           "bash": ("bash",),
+           "sh": ("sh",)}[name]
+    path = _which(*exe)
+    if path:
+        prefix = {
+            "pwsh": (path, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"),
+            "powershell": (path, "-NoProfile", "-NonInteractive", "-Command"),
+            "bash": (path, "-lc"),
+            "sh": (path, "-lc"),
+        }[name]
+        return ShellSpec(name, path, prefix)
+    if not fallback:
+        raise ShellUnavailable(f"指定 shell 不可用: {name}")
+    return None
+
+
+def select_shell(*, profile: str = "auto", fallback: bool = True) -> ShellSpec:
+    explicit = _explicit(profile, fallback)
+    if explicit is not None:
+        return explicit
     if os.name == "nt":
         pwsh = _which("pwsh.exe", "pwsh")
         if pwsh:

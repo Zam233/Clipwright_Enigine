@@ -191,7 +191,10 @@ async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
 
             from clipwright.config import settings as _exec_settings
 
-            _spec = select_shell(fallback=bool(getattr(_exec_settings, "exec_shell_fallback", True)))
+            _spec = select_shell(
+                profile=str(getattr(_exec_settings, "exec_shell_profile", "auto") or "auto"),
+                fallback=bool(getattr(_exec_settings, "exec_shell_fallback", True)),
+            )
             shell = shell or _spec.name
             shell_prefix = _spec.prefix
         except Exception:  # noqa: BLE001
@@ -251,7 +254,10 @@ async def run_command(
     try:
         from clipwright.config import settings as _exec_settings
 
-        shell_spec = select_shell(fallback=bool(getattr(_exec_settings, "exec_shell_fallback", True)))
+        shell_spec = select_shell(
+            profile=str(getattr(_exec_settings, "exec_shell_profile", "auto") or "auto"),
+            fallback=bool(getattr(_exec_settings, "exec_shell_fallback", True)),
+        )
     except ShellUnavailable as exc:
         return {"status": "rejected", "reason": str(exc)}
     shell_name = shell_spec.name
@@ -310,8 +316,12 @@ async def run_command(
         reasons.append(f"危险种子规则上调为 {final}")
     needs_double_confirm = final == "critical"
 
-    # 5) 分流：auto_low 默认开启只放行 low；med+ 一律授权
-    needs_approval = final != "low" or not auto_mode(pipeline_id)
+    # 5) 分流：med+ 一律授权；low 由 auto_low 决定；
+    # exec_require_approval=true 时连 low 也强制授权。
+    from clipwright.config import settings as _exec_policy
+
+    force_all = bool(getattr(_exec_policy, "exec_require_approval", False))
+    needs_approval = force_all or final != "low" or not auto_mode(pipeline_id)
     if needs_approval:
         needs_confirm = rv.requires_confirm({"risk": final}) or needs_double_confirm
         if True:

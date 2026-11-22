@@ -442,9 +442,9 @@ GET /api/task/{task_id}/executions
 - `clipwright/config.py`
   - `kernel_exec_enabled: bool = False`
   - `exec_auto_low: bool = True`（默认开启；用户可关闭）
-  - `exec_require_approval: bool = True`
+  - `exec_require_approval: bool = False`（true 时连 low 也强制授权）
   - 旧 `/exec/auto-mode` 语义收敛为 `auto_low`，不再减免 med
-  - `exec_shell_profile: Literal["pwsh", "powershell", "bash", "sh"] = "pwsh"`
+  - `exec_shell_profile: Literal["auto", "pwsh", "powershell", "bash", "sh"] = "auto"`
   - `exec_shell_fallback: bool = True`（Windows 无 PS7 自动 5.1；POSIX 无 bash 按配置回退 sh）
   - `exec_history_limit: int = 20`
   - `exec_approval_ttl_sec: int = 600`
@@ -739,4 +739,3 @@ Day 13-15   WP8 硬化 + 全量验收
 - 前端 `CopilotTaskRunTab` 快捷授权按钮仍保留 `window.confirm`，完整对话框通过「详情」进入；
 - `exec_store` 的审批写入是 workspace 文件，不是跨机器共享存储；
 - 全量后端最近一次运行包含 1 个 Windows socketpair 资源 error；单测单独重跑通过，未复现业务失败。
-- `exec_require_approval` 目前是配置项但策略仍固定为“med+ 必须授权”；`exec_shell_profile` 未实现为显式 profile，shell 按平台自动选择。

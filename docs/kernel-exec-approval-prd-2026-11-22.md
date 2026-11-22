@@ -442,6 +442,7 @@ root = Path(workspace_root).resolve()
 - POSIX：
   1. 默认 `bash -lc`；
   2. 没有 bash 时按配置回退 `sh -lc`；
+- `exec_shell_profile` 可显式指定 `auto/pwsh/powershell/bash/sh`，默认 `auto`；
 - 实际使用的 shell 写入风险报告、授权弹窗和执行记录；
 - 不允许用调用方传入的任意 shell 路径覆盖；
 - shell 变更必须让 Agent 可见，避免生成不兼容语法。
@@ -474,6 +475,7 @@ root = Path(workspace_root).resolve()
 - 默认值为 **开启**；
 - 开启时只允许 `low` 跳过授权，`med/high/critical` 一律暂停；
 - 关闭后 `low` 也必须授权；
+- `exec_require_approval=true` 时连 `low` 也强制授权（默认 false）；
 - 旧的“自动模式减免 med”行为删除。
 
 ---

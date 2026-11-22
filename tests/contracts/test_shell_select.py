@@ -24,3 +24,17 @@ def test_posix_bash(monkeypatch) -> None:
     monkeypatch.setattr(ss, "_which", lambda *names: "/bin/bash" if names[0] == "bash" else "")
     spec = ss.select_shell()
     assert spec.name == "bash" and spec.prefix[-1] == "-lc"
+
+
+def test_explicit_profile(monkeypatch) -> None:
+    monkeypatch.setattr(ss, "_which", lambda *names: "/bin/bash" if names[0] == "bash" else "")
+    spec = ss.select_shell(profile="bash", fallback=False)
+    assert spec.name == "bash"
+
+
+def test_explicit_profile_missing_fail_closed(monkeypatch) -> None:
+    monkeypatch.setattr(ss, "_which", lambda *names: "")
+    import pytest
+
+    with pytest.raises(ss.ShellUnavailable):
+        ss.select_shell(profile="bash", fallback=False)
