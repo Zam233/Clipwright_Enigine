@@ -16,6 +16,7 @@ from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.capabilities import resolve
+from clipwright.services import tool_jobs
 
 _CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _CACHE_MAX = 1024
@@ -138,13 +139,17 @@ class VisionBatchTool(BaseTool):
                     return {"index": index, "status": "failed",
                             "error": f"{type(exc).__name__}: {exc}"}
 
+        job = tool_jobs.create("vision_llm_batch", len(rows))
         items = await asyncio.gather(*[_one(i, a) for i, a in enumerate(rows)])
         ok = sum(1 for x in items if x.get("status") == "ok")
+        tool_jobs.finish(job.job_id, failed=len(items) - ok,
+                         error="" if ok else "所有候选视觉评分失败")
         return ToolExecResult(
             status=ToolStatus.SUCCESS if ok else ToolStatus.ERROR,
             tool_name=self.name,
             error="" if ok else "所有候选视觉评分失败",
             output={
+                "job_id": job.job_id,
                 "items": items,
                 "summary": {"total": len(items), "ok": ok, "failed": len(items) - ok},
             },

@@ -11,6 +11,7 @@ from typing import Any
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+from clipwright.services import tool_jobs
 
 
 class GenerateMGBatchTool(BaseTool):
@@ -101,13 +102,17 @@ class GenerateMGBatchTool(BaseTool):
                         "duration_ms": int((time.monotonic() - started) * 1000),
                     }
 
+        job = tool_jobs.create("generate_mg_batch", len(rows))
         results = await asyncio.gather(*[_one(i, r) for i, r in enumerate(rows)])
         ok_count = sum(1 for x in results if x["status"] == "ok")
+        tool_jobs.finish(job.job_id, failed=len(results) - ok_count,
+                         error="" if ok_count else "所有 MG 生成任务均失败")
         return ToolExecResult(
             status=ToolStatus.SUCCESS if ok_count else ToolStatus.ERROR,
             tool_name=self.name,
             error="" if ok_count else "所有 MG 生成任务均失败",
             output={
+                "job_id": job.job_id,
                 "items": results,
                 "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
             },

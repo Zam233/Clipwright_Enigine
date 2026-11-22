@@ -14,6 +14,7 @@ from .service import (
     ImageGenerationService,
 )
 from clipwright.tool.base import BaseTool, ToolExecResult, ToolStatus
+from clipwright.services import tool_jobs
 
 
 def _resolve_root(project_id: str = "", workspace_root: str = "") -> Path | None:
@@ -262,9 +263,12 @@ class ImageGenerateBatchTool(BaseTool):
                     return {"index": index, "ok": False, "error": f"{type(exc).__name__}: {exc}",
                             "prompt": prompt[:120]}
 
+        job = tool_jobs.create("image_generate_batch", len(clean))
         items = await asyncio.gather(*[_one(i, p) for i, p in enumerate(clean)])
         ok_count = sum(1 for x in items if x.get("ok"))
         failed = [x for x in items if not x.get("ok")]
+        tool_jobs.finish(job.job_id, failed=len(failed),
+                         error="" if ok_count else "所有 prompt 均生成失败")
         try:
             from clipwright.services.workspace_materials import ensure_workspace_source
 
@@ -275,6 +279,7 @@ class ImageGenerateBatchTool(BaseTool):
             logger.warning("工作区素材源注册失败: %s", exc)
 
         output = {
+            "job_id": job.job_id,
             "items": items,
             "summary": {"total": len(items), "ok": ok_count, "failed": len(failed)},
             "workspace": str(root),
