@@ -88,6 +88,7 @@ class GlobWorkspaceTool(BaseTool):
         "properties": {
             "pattern": {"type": "string", "description": "相对工作区的 glob 模式"},
             "max_results": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+            "cursor": {"type": "integer", "default": 0, "minimum": 0},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
             "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
         },
@@ -95,7 +96,7 @@ class GlobWorkspaceTool(BaseTool):
     }
 
     async def execute(
-        self, pattern: str = "", max_results: int = 100,
+        self, pattern: str = "", max_results: int = 100, cursor: int = 0,
         workspace_root: str = "", project_id: str = "", **kwargs: Any,
     ) -> ToolExecResult:
         root, err = _checked_root(workspace_root, project_id)
@@ -112,7 +113,7 @@ class GlobWorkspaceTool(BaseTool):
         cap = max(1, min(500, int(max_results or 100)))
         matches: list[dict[str, Any]] = []
         for p in root.glob(pat):
-            if len(matches) >= cap:
+            if len(matches) >= 500:
                 break
             if p.name in _SKIP_DIRS:
                 continue
@@ -125,10 +126,14 @@ class GlobWorkspaceTool(BaseTool):
                 "type": "dir" if p.is_dir() else "file",
                 "size_bytes": None if p.is_dir() else _safe_size(p),
             })
+        start = max(0, int(cursor or 0))
+        page = matches[start:start + cap]
+        next_cursor = start + cap if start + cap < len(matches) else 0
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
-            output={"pattern": pat, "count": len(matches), "items": matches,
-                    "truncated": len(matches) >= cap},
+            output={"pattern": pat, "total": len(matches), "count": len(page),
+                    "items": page, "next_cursor": next_cursor,
+                    "truncated": next_cursor != 0},
         )
 
 
@@ -145,6 +150,7 @@ class WorkspaceTreeTool(BaseTool):
             "depth": {"type": "integer", "default": 2, "minimum": 1, "maximum": 5},
             "pattern": {"type": "string", "description": "可选：只保留匹配的相对路径 glob"},
             "max_entries": {"type": "integer", "default": 200, "minimum": 1, "maximum": 1000},
+            "cursor": {"type": "integer", "default": 0, "minimum": 0},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
             "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
         },
@@ -152,7 +158,7 @@ class WorkspaceTreeTool(BaseTool):
 
     async def execute(
         self, depth: int = 2, pattern: str = "", max_entries: int = 200,
-        workspace_root: str = "", project_id: str = "", **kwargs: Any,
+        cursor: int = 0, workspace_root: str = "", project_id: str = "", **kwargs: Any,
     ) -> ToolExecResult:
         root = _workspace_base(workspace_root, project_id)
         if root is None:
@@ -160,13 +166,18 @@ class WorkspaceTreeTool(BaseTool):
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="未找到工作区（需要 workspace_root 或 project_id）",
             )
+        cap = max(1, min(1000, int(max_entries or 200)))
         items = _tree_items(
             root, depth=max(1, min(5, int(depth or 2))),
-            pattern=str(pattern or "").strip(), max_entries=max(1, min(1000, int(max_entries or 200))),
+            pattern=str(pattern or "").strip(), max_entries=1000,
         )
+        start = max(0, int(cursor or 0))
+        page = items[start:start + cap]
+        next_cursor = start + cap if start + cap < len(items) else 0
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
-            output={"root": str(root), "depth": depth, "count": len(items), "items": items},
+            output={"root": str(root), "depth": depth, "total": len(items),
+                    "count": len(page), "items": page, "next_cursor": next_cursor},
         )
 
 
@@ -240,6 +251,7 @@ class GrepWorkspaceTool(BaseTool):
             "glob": {"type": "string", "description": "可选：文件名过滤，如 *.md"},
             "ignore_case": {"type": "boolean", "default": False},
             "max_results": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+            "cursor": {"type": "integer", "default": 0, "minimum": 0},
             "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
             "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
         },
@@ -248,7 +260,7 @@ class GrepWorkspaceTool(BaseTool):
 
     async def execute(
         self, pattern: str = "", path: str = ".", glob: str = "",
-        ignore_case: bool = False, max_results: int = 50,
+        ignore_case: bool = False, max_results: int = 50, cursor: int = 0,
         workspace_root: str = "", project_id: str = "", **kwargs: Any,
     ) -> ToolExecResult:
         root, err = _checked_root(workspace_root, project_id)
@@ -274,7 +286,7 @@ class GrepWorkspaceTool(BaseTool):
             if p.is_file() and (not glob or fnmatch.fnmatch(p.name, glob))
         ]
         for file in files:
-            if len(matches) >= cap:
+            if len(matches) >= 500:
                 break
             if any(part in _SKIP_DIRS for part in file.parts):
                 continue
@@ -294,8 +306,12 @@ class GrepWorkspaceTool(BaseTool):
                     })
                     if len(matches) >= cap:
                         break
+        start = max(0, int(cursor or 0))
+        page = matches[start:start + cap]
+        next_cursor = start + cap if start + cap < len(matches) else 0
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
-            output={"pattern": pattern, "count": len(matches), "items": matches,
-                    "truncated": len(matches) >= cap},
+            output={"pattern": pattern, "total": len(matches), "count": len(page),
+                    "items": page, "next_cursor": next_cursor,
+                    "truncated": next_cursor != 0},
         )
