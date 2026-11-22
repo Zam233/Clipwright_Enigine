@@ -81,12 +81,6 @@ class FailureReport(BaseModel):
     retryable: str = Field(default="retry_same", description="可重试性，取值见 RETRY_MODES")
     evidence: list[dict[str, Any]] = Field(default_factory=list,
                                            description="证据引用 [{kind, ref}]")
-    #: 兼容字段：v2 的权威 needs 在 AgentOutputBase；老账本/诊断仍可能从
-    #: FailureReport 读取，保留只读兼容，不新增生产写入路径。
-    needs: list[dict[str, Any]] = Field(default_factory=list,
-                                        description="（兼容）缺失字段清单")
-
-
 class Need(BaseModel):
     """v2 唯一缺项真相（每个缺失字段一条，不得拼成字符串）。
 
