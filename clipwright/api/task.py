@@ -348,7 +348,7 @@ async def resume_task(task_id: str, request: Request) -> dict:
     task = kernel.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-    if task.terminal and task.status != "cancelled":
+    if task.terminal:
         raise HTTPException(
             status_code=409,
             detail={
@@ -357,37 +357,6 @@ async def resume_task(task_id: str, request: Request) -> dict:
                 "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
             },
         )
-    if task.status == "cancelled":
-        # 用户取消不是不可逆终态：保留黑板/已完成阶段，清掉终态标记后从
-        # 同一个 Task 的检查点继续，而不是新建任务从 structure 重跑。
-        task.status = "running"
-        task.finish = None
-        task.terminal_reason = None
-        task.blocker_code = ""
-        if hasattr(task, "touch"):
-            task.touch()
-    if task.status == "waiting_user":
-        from clipwright.services import ask_user
-
-        pend = ask_user.pending("task", task_id)
-        if pend:
-            raise HTTPException(
-                status_code=409,
-                detail={"reason": "waiting_answer",
-                        "question_id": pend[0]["question_id"],
-                        "message": "任务正在等待回答，请先回答上面的问题或取消任务"},
-            )
-        # 服务重启后：旧协程已不在，问题已判 expired → 回落到 paused 再放行
-        task.status = "paused"
-        try:
-            from clipwright.services.task_events import emit
-
-            emit(task_id, "narration", "原问题已失效，任务继续",
-                 {"kind": "question_expired_on_restart"}, span="kernel")
-        except Exception:  # noqa: BLE001 — 事件不可用不影响续跑
-            pass
-        if hasattr(task, "touch"):
-            task.touch()
     _schedule(task_id)
     return {"task_id": task_id, "status": "running", "resumed": True}
 
