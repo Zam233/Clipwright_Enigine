@@ -37,3 +37,9 @@ MATERIAL_ENGLISH_HEAD = (
     "把下面用于视频素材库（Pexels）检索的中文关键词翻成**英文检索词**。\n"
     "要求：只输出英文关键词，用 / 分隔，保持顺序与个数一致，不要解释。\n\n"
 )
+
+
+MATERIAL_VISION_BATCH_GUIDE = (
+    "视觉评分优先使用 vision_llm_batch：先按场景候选粗排 top-K，再一批提交；"
+    "缓存键包含素材标识/帧数/场景上下文，失败项单独重试；不要逐候选调用 vision_llm。"
+)

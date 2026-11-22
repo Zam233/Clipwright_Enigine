@@ -565,9 +565,12 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `timeline_insert_image` | Engine 内置 | — | task_id, asset_ref（工作区相对路径）, position（start/end/after:<clip_id>）, duration_sec, motion（ken_burns/still）；走补丁引擎，dry_run 可预览 |
 | `timeline_insert_images` | Engine 内置 | — | task_id, items[](asset_ref/position/duration_sec/motion)；批量插入，逐项返回 clip_id 与失败原因，dry_run 可预览 |
 | `vision_llm_batch` | Engine 内置 | 由 `vision_score` 能力决定（vision_llm 或插件接管） | assets[] + scene_context + frame_count + concurrency；批量视觉评分，单项失败隔离，带缓存 |
-| `video_trim_batch` | Engine 内置 | 由 `video_trim` 能力决定（内置 ffmpeg 或插件接管） | items[](input_path/start_sec/duration_sec/end_sec/output_path) + concurrency；批量裁剪，逐项返回 output_path/error |
+| `video_trim_batch` | Engine 内置 | 由 `video_trim` 能力决定（内置 ffmpeg 或插件接管） | items[](asset/input_path/start_sec/duration_sec/track/position) + concurrency/idempotency_key；逐项 output_path/error/failures，带 trim 缓存 |
+| `apply_edl` | Engine 内置 | 依赖 `video_trim_batch` | 批量裁剪后按 track/position 落时间线；支持 dry_run |
 | `artifact_search` / `artifact_summary` | Engine 内置 | — | 按关键词搜索产物（不读全文）；读取类型/大小/sha256/顶层结构/预览 |
-| `generate_mg_batch` | Engine 内置 | `MGGenerator` | items[](description/text_content/type_id/duration_s/persona_style/scene_context) + concurrency；批量 MG（typed 走 generate_for_type），逐项返回 mg_def/error |
+| `generate_mg_batch` | Engine 内置 | `MGGenerator` | items[](description/text_content/type_id/duration_s/mg_def/persona_style/scene_context) + concurrency；逐项 mg_def/issues/preview_path/error |
+| `validate_animation_clip` / `preview_animation_clip` | Engine 内置 | — | 颜色/关键帧/时长前置校验；HTML 预览写工作区 cache/animation_preview |
+| `candidate_query` / `candidate_rerank` / `material_dedupe` | Engine 内置 | — | 候选素材查询/确定性粗排/去重 |
 | `quality_report` | Engine 内置 | — | 读最近一次 quality 阶段报告；没有报告时返回 not_found，提示先派 quality |
 
 `image_generate` / `image_generate_batch` 由 `image_generate` 插件提供；未安装插件或没有图像源时**不出现在工具面**，Engine 不保留空壳工具。生成后自动注册该工作区的图片素材源，但**不会自动进入时间线**，需要 `timeline_insert_image` / `timeline_insert_images`。

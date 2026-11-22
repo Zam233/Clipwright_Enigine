@@ -26,3 +26,9 @@ ANIM_MARKER_SYSTEM_HEADER = (
     "供后续 AnimationAgent 创建动画。请根据场景内容从可用动画中选择最合适的，不要硬编码。\n\n"
     "## 动画选择规则\n"
 )
+
+
+EDIT_BATCH_GUIDE = (
+    "剪辑阶段优先收集 EDL/裁剪单元，用 video_trim_batch/apply_edl 批量提交；"
+    "不要为每个 clip 单独调用 video_trim。图片/文字占位仍走各自工具。"
+)

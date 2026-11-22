@@ -349,3 +349,14 @@ LLM 生成 MG JSON
   └── LLM 不可用 → 关键词匹配已有模板 → drawtext 最终降级
 ```
 ```
+
+
+## 派发前预检（tool ergonomics R7）
+
+`delegate_agent` 会在派发前调用 `services/stage_inputs.preflight(stage, task, board, inputs)`
+构造对应 `*Input`：
+
+- `input_invalid`：字段/类型/颜色等 Pydantic 错误，直接拒绝派发，附 `field/message/suggestion`；
+- `input_insufficient`：缺上游，保持软处理，交给阶段返回 `needs`。
+
+新增阶段输入字段时必须同步预检，避免 `glow_color=""` 这类错误在阶段内部白跑。
