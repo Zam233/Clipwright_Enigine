@@ -36,7 +36,10 @@ def forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ChatForge:
     return ChatForge()
 
 
-def _png_data_url(payload: bytes = b"fake-png-bytes") -> str:
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+
+def _png_data_url(payload: bytes = _PNG_BYTES) -> str:
     return "data:image/png;base64," + base64.b64encode(payload).decode()
 
 
