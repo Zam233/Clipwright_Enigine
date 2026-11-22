@@ -51,7 +51,12 @@ from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
 from clipwright.tool.fs_tools import ListDirTool, ReadFileTool, WriteFileTool
-from clipwright.tool.artifacts import ListArtifactsTool, ReadArtifactTool
+from clipwright.tool.artifacts import (
+    ArtifactSearchTool,
+    ArtifactSummaryTool,
+    ListArtifactsTool,
+    ReadArtifactTool,
+)
 from clipwright.tool.reports import EditFileTool, ListReportsTool, ReadReportTool
 from clipwright.tool.type_spec_tool import GetTypeSpecTool
 from clipwright.tool.subtitle import SubtitleBurnTool
@@ -169,6 +174,8 @@ def register_builtin_tools() -> None:
         EditFileTool(),
         # —— 产物读取（PRD §17.5）：list_artifacts / read_artifact ——
         ListArtifactsTool(),
+        ArtifactSearchTool(),
+        ArtifactSummaryTool(),
         ReadArtifactTool(),
         # —— 类型规范查询（只读；主 agent 判断"能不能豁免"用）——
         GetTypeSpecTool(),

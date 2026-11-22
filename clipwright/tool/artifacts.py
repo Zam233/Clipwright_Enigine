@@ -205,4 +205,130 @@ def _walk(payload: Any, dotted: str) -> Any:
     return cur
 
 
-__all__ = ["READ_ARTIFACT_MAX_BYTES", "ListArtifactsTool", "ReadArtifactTool"]
+__all__ = ["READ_ARTIFACT_MAX_BYTES", "ListArtifactsTool", "ReadArtifactTool",
+           "ArtifactSearchTool", "ArtifactSummaryTool"]
+
+
+class ArtifactSearchTool(BaseTool):
+    """按关键词搜索工作区产物，不读全文进上下文。"""
+
+    name = "artifact_search"
+    permission_tier = "read"
+    agent_callable = True
+    dependencies: list[str] = []
+    description = "在工作区 artifacts/ 中按关键词搜索 JSON 内容，返回 artifact id/路径/预览，最多 20 条。"
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "搜索关键词（大小写不敏感）"},
+            "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+            "project_id": {"type": "string"},
+            "workspace_root": {"type": "string"},
+        },
+        "required": ["query"],
+    }
+
+    async def execute(
+        self, query: str = "", limit: int = 20,
+        project_id: str = "", workspace_root: str = "", **kwargs: Any,
+    ) -> ToolExecResult:
+        root = _resolve_root(project_id, workspace_root)
+        if root is None:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="未找到工作区（需要 project_id 或 workspace_root）")
+        needle = str(query or "").strip().lower()
+        if not needle:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="query 不能为空")
+        cap = max(1, min(50, int(limit or 20)))
+        base = root / "artifacts"
+        items: list[dict[str, Any]] = []
+        if base.is_dir():
+            for path in sorted(base.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                if len(items) >= cap:
+                    break
+                try:
+                    raw = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if needle not in raw.lower():
+                    continue
+                try:
+                    payload = json.loads(raw)
+                    preview = _preview_of(payload)
+                except Exception:  # noqa: BLE001
+                    preview = "（无法解析）"
+                stat = path.stat()
+                items.append({
+                    "artifact": path.stem, "path": str(path),
+                    "bytes": stat.st_size, "mtime": int(stat.st_mtime),
+                    "preview": preview,
+                })
+        return ToolExecResult(
+            status=ToolStatus.SUCCESS, tool_name=self.name,
+            output={"query": query, "count": len(items), "items": items,
+                    "truncated": len(items) >= cap},
+        )
+
+
+class ArtifactSummaryTool(BaseTool):
+    """只返回产物结构摘要，不把正文塞进上下文。"""
+
+    name = "artifact_summary"
+    permission_tier = "read"
+    agent_callable = True
+    dependencies: list[str] = []
+    description = "读取产物结构摘要：类型、大小、sha256、顶层键/条目数、预览；不返回完整正文。"
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "artifact": {"type": "string"},
+            "path": {"type": "string"},
+            "project_id": {"type": "string"},
+            "workspace_root": {"type": "string"},
+        },
+    }
+
+    async def execute(
+        self, artifact: str = "", path: str = "",
+        project_id: str = "", workspace_root: str = "", **kwargs: Any,
+    ) -> ToolExecResult:
+        root = _resolve_root(project_id, workspace_root)
+        target: Path | None = None
+        if path:
+            target = Path(str(path)).expanduser()
+            if not target.is_absolute() and root is not None:
+                target = (root / target).resolve()
+        elif artifact and root is not None:
+            target = root / "artifacts" / f"{Path(str(artifact)).stem}.json"
+        if target is None or not target.is_file():
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="找不到产物（给 artifact id 或 path）")
+        from clipwright.security import SecurityViolation, assert_allowed_path
+
+        try:
+            assert_allowed_path(target)
+        except SecurityViolation as exc:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=f"路径不在允许的目录内: {exc}")
+        try:
+            raw = target.read_bytes()
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception as exc:  # noqa: BLE001
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=f"{type(exc).__name__}: {exc}")
+        shape: dict[str, Any] = {"type": type(payload).__name__}
+        if isinstance(payload, dict):
+            shape["keys"] = list(payload)[:30]
+            shape["key_count"] = len(payload)
+        elif isinstance(payload, list):
+            shape["length"] = len(payload)
+        return ToolExecResult(
+            status=ToolStatus.SUCCESS, tool_name=self.name,
+            output={
+                "artifact": target.stem, "path": str(target),
+                "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                "shape": shape, "preview": _preview_of(payload),
+            },
+            output_path=str(target),
+        )
