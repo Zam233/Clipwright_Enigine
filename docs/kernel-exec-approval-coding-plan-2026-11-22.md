@@ -736,6 +736,6 @@ Day 13-15   WP8 硬化 + 全量验收
 ### 当前限制
 
 - `gateway` 的网络隔离仍只是默认剥离代理变量，不是 OS 级沙箱；
-- 前端 `CopilotTaskRunTab` 快捷授权按钮仍保留 `window.confirm`，完整对话框通过「详情」进入；
+- 前端授权入口已统一到 `ExecPermissionDialog`：`approval_request` 自动弹出，快捷按钮只负责打开弹窗；
 - `exec_store` 的审批写入是 workspace 文件，不是跨机器共享存储；
 - 全量后端最近一次运行包含 1 个 Windows socketpair 资源 error；单测单独重跑通过，未复现业务失败。
