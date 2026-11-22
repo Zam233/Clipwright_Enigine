@@ -24,11 +24,16 @@ import re
 import sys
 from pathlib import Path
 
-from _repo_paths import frontend_root
+# 直接按文件路径加载时（测试用 importlib），脚本目录不在 sys.path；先补齐
+# 再加仓库根，保证 `_repo_paths` 与 `clipwright` 都能导入。
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+for _p in (_SCRIPTS_DIR, _SCRIPTS_DIR.parent):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from _repo_paths import frontend_root  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 #: 前端仓库默认位置：CLIPWRIGHT_FRONTEND_ROOT，否则与本仓库同级
 CLIENT_DEFAULT = frontend_root()
