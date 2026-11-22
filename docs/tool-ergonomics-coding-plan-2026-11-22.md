@@ -31,7 +31,7 @@
 | PRD | 工具/能力 | Engine 落点 | 说明 |
 |---|---|---|---|
 | R1 | `vision_llm_batch` | `clipwright/tool/vision_batch.py` | 通用视觉评分批处理；复用 `vision_score` 能力 |
-| R2 | `image_generate` / `image_generate_batch` | **Plugin**（`plugins/image_providers/`） | 文生图能力、provider 选择、批量语义全部归插件；Engine 不注册该工具 |
+| R2 | `image_generate` / `image_generate_batch` | **Plugin**（`plugins/image_generate/`） | 文生图能力、provider 选择、批量语义全部归插件；Engine 不注册该工具 |
 | R2 | `timeline_insert_images` | `clipwright/tool/timeline_insert_image.py` 扩展 | 批量插入时间线；Engine 持有 timeline |
 | R3 | `video_trim_batch` / `apply_edl` | `clipwright/tool/video_batch.py` | FFmpeg/时间线是 Engine 能力 |
 | R4 | `generate_mg_batch` | `clipwright/tool/animation_batch.py` | MG 生成与时间线写入是 Engine |
@@ -54,10 +54,10 @@
 | 能力 | 插件落点 | 原因 |
 |---|---|---|
 | `material_source_probe` | `plugins/*_material/` + `clipwright/material/base.py` 可选 `probe()` | 只有素材源自己知道可用性、地区、限流、鉴权 |
-| 厂商原生批量生图 | `plugins/image_providers/`、`plugins/image_gpt_images/` | 原生 batch API 属于 provider 实现；Engine 只定义可选 `generate_batch` 契约 |
+| 厂商原生批量生图 | `plugins/image_generate/`、`plugins/image_gpt_images/` | 原生 batch API 属于 provider 实现；Engine 只定义可选 `generate_batch` 契约 |
 | 插件素材源检索/排序的私有评分 | 对应 `*_material` 插件 | 私有索引、许可证、可用性不能写进 Engine |
-| `image_generate`（单张工具） | `plugins/image_providers/` | 工具能力应由插件提供；无 provider/插件时工具不出现，Engine 不保留空壳 |
-| `image_generate_batch`（批量工具） | `plugins/image_providers/` | 批量 API/参数/响应/调度归插件；Engine 不注册 |
+| `image_generate`（单张工具） | `plugins/image_generate/` | 工具能力应由插件提供；无 provider/插件时工具不出现，Engine 不保留空壳 |
+| `image_generate_batch`（批量工具） | `plugins/image_generate/` | 批量 API/参数/响应/调度归插件；Engine 不注册 |
 | `web_images` / `fact_need` | `plugins/web_media/` | 网页媒体与事实判断本来就是插件贡献 |
 | TTS/STT/embedding/rerank provider | 对应插件 | 遵守 provider 实现归插件 |
 | Animation 类型的具体生成实现 | `plugins/text_animations`、`mg_animations`、`logic_animations` | Engine 只提供批量编排与时间线写入 |
@@ -66,7 +66,7 @@
 ### 1.3 明确不移动
 
 - `web_search` / `web_fetch` 仍是 Engine 内置工具（现有边界）；
-- `image_generate` **不再保留 Engine 工具**：工具与 provider 一起由 `image_providers` 插件提供；
+- `image_generate` **不再保留 Engine 工具**：工具与 provider 一起由 `image_generate` 插件提供；
 - Engine 只保留 `ImageProvider` 协议、provider source 注册/解析、通用 workspace/job/asset 基础设施；
 - 没有 image provider 插件时，`image_generate` 不出现在工具面，不存在“空壳工具”；
 - `generate_mg` 的现有 Engine 内实现不搬进插件；
@@ -145,7 +145,7 @@
 
 **目标**
 
-Engine 只留 `ImageProvider` 接口与通用基础设施；`image_generate` / `image_generate_batch` 由 `plugins/image_providers/` 提供，无插件时工具不存在。
+Engine 只留 `ImageProvider` 接口与通用基础设施；`image_generate` / `image_generate_batch` 由 `plugins/image_generate/` 提供，无插件时工具不存在。
 
 **文件**
 
@@ -156,8 +156,8 @@ Engine 只留 `ImageProvider` 接口与通用基础设施；`image_generate` / `
   - `clipwright/services/workspace_materials.py`、`asset`、`tool_jobs`（通用基础设施）
   - 删除 `clipwright/tool/image_generate.py` 及 `services/image_generation.py` 的 image-specific 实现
 - Plugin：
-  - `plugins/image_providers/main.py`：provider 实现 + `ImageGenerateTool` + `ImageGenerateBatchTool`
-  - `plugins/image_providers/plugin.yaml`：声明 `image_provider` + `tool: image_generate` + `tool: image_generate_batch`
+  - `plugins/image_generate/main.py`：provider 实现 + `ImageGenerateTool` + `ImageGenerateBatchTool`
+  - `plugins/image_generate/plugin.yaml`：声明 `image_provider` + `tool: image_generate` + `tool: image_generate_batch`
   - `plugins/image_gpt_images/`：只保留 provider，不重复注册 tool
 - 通用 timeline：
   - `clipwright/tool/timeline_insert_image.py`（批量 `timeline_insert_images`）
@@ -167,7 +167,7 @@ Engine 只留 `ImageProvider` 接口与通用基础设施；`image_generate` / `
 
 **步骤**
 
-1. 把 `ImageGenerateTool`、批量逻辑、账本/落盘注入移到 `plugins/image_providers/`；插件只通过公开的 `Workspace`、`AssetIndex`、`provider_sources`、`ToolJobs` 接口访问宿主。
+1. 把 `ImageGenerateTool`、批量逻辑、账本/落盘注入移到 `plugins/image_generate/`；插件只通过公开的 `Workspace`、`AssetIndex`、`provider_sources`、`ToolJobs` 接口访问宿主。
 2. 插件 manifest 声明工具贡献；`is_available()` 由插件自身判断 provider 源。
 3. 无插件 / 无源时：
    - `ToolRegistry` 没有 `image_generate`；
@@ -179,7 +179,7 @@ Engine 只留 `ImageProvider` 接口与通用基础设施；`image_generate` / `
 
 **验收**
 
-- 未安装 `image_providers` 时，工具面没有 `image_generate`；
+- 未安装 `image_generate` 时，工具面没有 `image_generate`；
 - 安装后单张/批量都可用；
 - Engine 中不再有 image-specific tool/service；
 - 64 次串行生成 → ≤8 批；

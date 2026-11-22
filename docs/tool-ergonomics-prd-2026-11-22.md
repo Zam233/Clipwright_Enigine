@@ -204,7 +204,7 @@
 #### R2 生图工具整体由插件提供
 
 - **Engine 只保留接口**：`ImageProvider` 协议、request/result/capabilities、`provider_sources` 源配置、通用 workspace/asset/job 基础设施。
-- **Plugin `image_providers` 提供工具**：`image_generate`（单张）与 `image_generate_batch`（批量）都作为插件 `tool` 贡献注册；provider 实现也在同一插件（`image_gpt_images` 作为 provider 插件）。
+- **Plugin `image_generate` 提供工具**：`image_generate`（单张）与 `image_generate_batch`（批量）都作为插件 `tool` 贡献注册；provider 实现也在同一插件（`image_gpt_images` 作为 provider 插件）。
 - **无插件/无 provider 时**：`image_generate` 不出现在工具面，不存在“Engine 空壳工具”；Agent 不得假设它可用。
 - 输入：`prompts[]`、`size`、`n`、`workspace_root`；
 - 输出：每项 `{ok, rel_path, sha256, mime, error}`；
