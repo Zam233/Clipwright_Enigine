@@ -1008,6 +1008,38 @@ class AgentKernel:
 
     # ── plan_only：主 agent 派发"生成制作规划书"的收尾（PRD plan-dispatch D1/D2）──
 
+    def _finish(self, task: Task, *, reason: str = "tool_loop_completed") -> None:
+        """兼容旧调用方的同步收尾入口（不再驱动主循环）。
+
+        保留"没有可渲染时间线就不许宣称完成"的硬守门；新代码仍走
+        `_run_tool_loop` 的异步收尾路径。
+        """
+        from clipwright.schema.task import TaskFinish
+
+        completed: list[str] = []
+        unfinished: list[str] = []
+        if reason in ("tool_loop_completed", "plan_completed"):
+            try:
+                from clipwright.services import task_blackboard as _bb
+
+                board = _bb.get(task.id) or {}
+                if board.get("final_timeline"):
+                    completed.append("final_timeline")
+                else:
+                    reason = "缺少可渲染时间线（final_timeline 为空）"
+                    unfinished.append("final_timeline")
+            except Exception:  # noqa: BLE001 — 守门失败不阻断收尾
+                pass
+        task.finish = TaskFinish(
+            conclusion=f"结束原因：{reason}", completed=completed,
+            unfinished=unfinished, reason=reason,
+        )
+        if task.status not in ("cancelled", "paused"):
+            task.status = "done" if reason in ("tool_loop_completed",
+                                               "plan_completed") else "failed"
+        if hasattr(task, "touch"):
+            task.touch()
+
     async def _finish_plan_only(self, task: Task) -> str:
         """plan_only 任务的守门：确保有分镜场景，并把 `reports/plan.json` 落盘。
 
