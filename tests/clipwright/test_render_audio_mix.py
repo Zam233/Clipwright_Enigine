@@ -185,3 +185,55 @@ async def test_mix_audio_speed_slow_chain(tmp_path: Path) -> None:
     cmd = captured[0]
     assert "atrim=start=0.0:duration=1.000000" in cmd
     assert cmd.count("atempo=0.5") == 2, "speed=0.25 应拆两级 atempo=0.5"
+
+
+@pytest.mark.asyncio
+async def test_mix_audio_single_source_respects_offset_and_position(tmp_path: Path) -> None:
+    """#30：单音源也必须 atrim 源偏移并用 adelay 对齐时间线。"""
+    video = tmp_path / "video.mp4"
+    voice = tmp_path / "voice.wav"
+    video.write_bytes(b"x" * 64)
+    voice.write_bytes(b"y" * 64)
+    out = tmp_path / "out.mp4"
+    rs = RenderService(work_dir=tmp_path / "work")
+    captured: list[str] = []
+
+    async def fake_ff(cmd, **kwargs):
+        captured.append(" ".join(cmd))
+        out.write_bytes(b"mp4")
+        return type("R", (), {"returncode": 0})()
+
+    rs._ff = fake_ff  # type: ignore[method-assign]
+    segments = [{"source_path": str(voice), "volume": 1.0, "start_sec": 1.5,
+                 "duration_sec": 1.0, "source_offset": 2.0}]
+    await rs._mix_audio(str(video), segments, str(out), afp="", bfp="")
+    cmd = captured[0]
+    assert "atrim=start=2.000000:duration=1.000000" in cmd
+    assert "adelay=1500|1500" in cmd
+
+
+@pytest.mark.asyncio
+async def test_mix_audio_zero_volume_is_preserved(tmp_path: Path) -> None:
+    """#31：volume=0 不能被 `or 1.0` 回退成 1。"""
+    video = tmp_path / "video.mp4"
+    voice = tmp_path / "voice.wav"
+    bgm = tmp_path / "bgm.mp3"
+    for p in (video, voice, bgm):
+        p.write_bytes(b"x" * 64)
+    out = tmp_path / "out.mp4"
+    rs = RenderService(work_dir=tmp_path / "work")
+    captured: list[str] = []
+
+    async def fake_ff(cmd, **kwargs):
+        captured.append(" ".join(cmd))
+        out.write_bytes(b"mp4")
+        return type("R", (), {"returncode": 0})()
+
+    rs._ff = fake_ff  # type: ignore[method-assign]
+    segments = [
+        {"source_path": str(voice), "volume": 0, "start_sec": 0, "duration_sec": 2},
+        {"source_path": str(bgm), "volume": 0.3, "start_sec": 0, "duration_sec": 2,
+         "is_bgm": True},
+    ]
+    await rs._mix_audio(str(video), segments, str(out), afp="", bfp="")
+    assert "volume=0.0" in captured[0]
