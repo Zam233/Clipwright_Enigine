@@ -41,6 +41,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "tool_result",
     "approval_request",
     "approval_result",
+    "exec_request",
+    "exec_risk",
+    "exec_result",
     "degradation",
     "artifact",
     "step_end",
@@ -366,6 +369,8 @@ class Task(BaseModel):
     closeout: Closeout = Field(default_factory=Closeout)
     #: 质量 agent 的预算托管（budget_usd 为 null 时恒为 disabled）
     escrow: Optional[BudgetEscrow] = None
+    #: 当前等待用户授权的 Exec approval（重启后仍可恢复）
+    pending_exec_approval_id: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

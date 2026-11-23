@@ -228,6 +228,7 @@ def build_material_queries_batch_prompt(
         + _c("MATERIAL_QUERY_BATCH_EN")
         + material_style_hint(persona_style)
         + material_brief_hint(brief_hint)
+        + _c("COMMON_TOOL_GUIDE")
     )
 
 
@@ -244,6 +245,7 @@ def build_material_queries_prompt(
         )
         + material_style_hint(persona_style)
         + material_brief_hint(brief_hint)
+        + _c("COMMON_TOOL_GUIDE")
     )
 
 

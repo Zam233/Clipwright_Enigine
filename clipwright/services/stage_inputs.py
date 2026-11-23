@@ -67,6 +67,62 @@ def missing_keys(stage: str, board: dict[str, Any], override: dict[str, Any] | N
     return [k for k in REQUIRED_KEYS.get(stage, ()) if k not in available]
 
 
+def preflight(stage: str, *, task: Any, board: dict[str, Any] | None = None,
+              inputs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """派发前预检：构造 Input 并返回可读错误（不执行阶段）。
+
+    R7：把 `glow_color` 之类的 Pydantic 错误挡在 `delegate_agent` 之前，
+    避免整段阶段白跑后才在写时间线时失败。
+    """
+    if stage not in REQUIRED_KEYS:
+        # 未知阶段交给阶段 Adapter 的既有 needs 语义，不要在预检层改判为字段错误
+        return [{
+            "field": "stage", "category": "input_insufficient",
+            "message": f"未知阶段: {stage}",
+            "suggestion": "检查 delegate_agent 的 stage 是否拼写正确",
+        }]
+    try:
+        assemble(stage, task=task, board=board or {}, override=inputs or {})
+        return []
+    except StageInputMissing as exc:
+        return [{
+            "field": key,
+            "category": "input_insufficient",
+            "message": f"缺少必需输入: {key}",
+            "suggestion": f"先派 {KEY_PRODUCER.get(key, 'structure')}",
+        } for key in exc.missing]
+    except Exception as exc:  # noqa: BLE001 — ValidationError 等
+        errors = getattr(exc, "errors", None)
+        if callable(errors):
+            out=[]
+            try:
+                for err in errors()[:20]:
+                    loc=".".join(str(x) for x in (err.get("loc") or ()))
+                    out.append({
+                        "field": loc or "inputs",
+                        "category": "input_invalid",
+                        "message": str(err.get("msg") or "输入校验失败")[:300],
+                        "suggestion": "按字段约束修正后重派；颜色字段必须是 #RRGGBB",
+                    })
+            except Exception:  # noqa: BLE001
+                out=[]
+            if out:
+                return out
+        return [{
+            "field": "inputs",
+            "category": "input_invalid",
+            "message": f"{type(exc).__name__}: {exc}"[:300],
+            "suggestion": "检查输入 shape 与字段约束",
+        }]
+
+
+def validate_agent_inputs(stage: str, inputs: dict[str, Any] | None = None, *,
+                          task: Any, board: dict[str, Any] | None = None
+                          ) -> list[dict[str, Any]]:
+    """R7 公开入口：派发前校验阶段 inputs，返回可读错误列表。"""
+    return preflight(stage, task=task, board=board, inputs=inputs or {})
+
+
 def validate(stage: str, inputs: dict[str, Any],
              board: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """校验主 agent 显式给的 inputs；返回 `needs[]`（空列表 = 齐了）。
@@ -231,6 +287,24 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
         pass
     vm = visual_ctx.visual_config
 
+    # 主 Agent 的 image_generate 产物只落在 materials/image/，不会自动进入
+    # candidate_clips。所有阶段都装配同一份 image_assets，避免只有 animation
+    # 能看到新图、edit/material 看不到（2026-11-22 实机）。
+    _image_assets: list[dict[str, Any]] = []
+    try:
+        from clipwright.services.workspace_materials import workspace_image_entries
+
+        _explicit_images = data.get("image_assets")
+        if isinstance(_explicit_images, list) and _explicit_images:
+            _image_assets = [x for x in _explicit_images if isinstance(x, dict)]
+        else:
+            _workspace_root = str((extra or {}).get("workspace_root") or "")
+            _image_assets = workspace_image_entries(_workspace_root)
+    except Exception as exc:  # noqa: BLE001 — 图片索引失败不能阻断阶段
+        logger.warning("阶段输入：装配 image_assets 失败（按空处理）: %s", exc)
+    if isinstance(getattr(ctx, "extra_params", None), dict):
+        ctx.extra_params["image_assets"] = _image_assets
+
     def _cfg(key: str) -> dict[str, Any]:
         """配置类字段：黑板 → extra（配置通常由 API 透传，不进黑板）。"""
         value = data.get(key)
@@ -263,6 +337,8 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             "creative_brief": brief,
             "production_plan": plan,
             **data,
+            # 显式/工作区图片最后写入：黑板里即使有同名字段，也不能把新图覆盖掉。
+            "image_assets": _image_assets,
         }
 
     if stage == "structure":
@@ -276,6 +352,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             rag_context=data.get("rag_context", "") or extra.get("rag_context", "") or "",
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage in ("material", "edit"):
@@ -298,6 +375,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             material_plugin_config=_cfg("material_plugin_config"),
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage == "edit":
@@ -309,11 +387,11 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             candidate_clips=data.get("candidate_clips", []) or [],
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage == "animation":
         from clipwright.schema.agent import AnimationInput
-        from clipwright.services.generated_assets import generated_image_entries
         from clipwright.schema.timeline import Timeline
 
         return AnimationInput(
@@ -322,7 +400,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             visual_config=vm or data.get("visual_config", {}) or {},
             persona_prompt=visual_ctx.persona_prompt or data.get("persona_prompt"),
             vision_prompt=visual_ctx.vision_prompt or data.get("vision_prompt"),
-            image_assets=data.get("image_assets") or generated_image_entries(),
+            image_assets=data.get("image_assets") or _image_assets,
             retry_clip_ids=list(data.get("retry_clip_ids") or []),
             background_context=dict(data.get("background_context") or {}),
             creative_brief=brief,
@@ -338,6 +416,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             audio_config=_cfg("audio_config"),
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     if stage == "quality":
@@ -350,6 +429,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
                          or dict((visual_ctx.persona_config or {}).get("constraints") or {})),
             creative_brief=brief,
             production_plan=plan,
+            image_assets=_image_assets,
         )
 
     raise ValueError(f"未知阶段: {stage}")

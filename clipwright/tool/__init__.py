@@ -8,6 +8,9 @@
 
 from clipwright.tool.animation import TrackingTextTool, TypewriterAnimationTool
 from clipwright.tool.animation_list import ListAnimationsTool
+from clipwright.tool.animation_batch import GenerateMGBatchTool
+from clipwright.tool.animation_validate import ValidateAnimationClipTool
+from clipwright.tool.animation_preview import PreviewAnimationClipTool
 from clipwright.tool.describe_llm_mg import DescribeLLMMGTool
 from clipwright.tool.audio import (
     AudioExtractTool,
@@ -35,7 +38,11 @@ from clipwright.tool.effects import (
 # 检测 + 专项测试）；质量类工具（静音/黑帧/字幕溢出）与 MaterialFilterTool 取
 # 本地 tool/quality.py、tool/material.py 真实实现，替代远程 stubs 占位版。
 from clipwright.tool.frame_validator import FrameValidatorTool
+from clipwright.tool.material_query import (
+    CandidateQueryTool, CandidateRerankTool, MaterialDedupeTool,
+)
 from clipwright.tool.material import MaterialFilterTool
+from clipwright.tool.quality_report import QualityReportTool
 from clipwright.tool.quality import (
     AudioSilenceDetectTool,
     BlackFrameDetectTool,
@@ -45,18 +52,28 @@ from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.project_memory import ProjectMemoryTool
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
-from clipwright.tool.stubs import VisionLLMTool
+from clipwright.tool.stubs import ReadImageTool
 from clipwright.tool.timeline_view import TimelineViewTool
+from clipwright.tool.timeline_probe import TimelineProbeTool
+from clipwright.tool.scene_analysis import SceneBudgetCheckTool, ScriptSceneDiffTool
+from clipwright.tool.audio_inspect import AudioTimelineProbeTool, MixReportTool
 from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
 from clipwright.tool.fs_tools import ListDirTool, ReadFileTool, WriteFileTool
-from clipwright.tool.artifacts import ListArtifactsTool, ReadArtifactTool
+from clipwright.tool.artifacts import (
+    ArtifactSearchTool,
+    ArtifactSummaryTool,
+    ListArtifactsTool,
+    ReadArtifactTool,
+)
 from clipwright.tool.reports import EditFileTool, ListReportsTool, ReadReportTool
 from clipwright.tool.type_spec_tool import GetTypeSpecTool
 from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.text_style_apply import ApplyTextStyleTool
+from clipwright.tool.video_batch import VideoTrimBatchTool
+from clipwright.tool.edl_apply import ApplyEdlTool
 from clipwright.tool.video import (
     MediaProbeTool,
     VideoConcatTool,
@@ -66,10 +83,19 @@ from clipwright.tool.video import (
     VideoThumbnailTool,
     VideoTrimTool,
 )
-from clipwright.tool.image_generate import ImageGenerateTool
-from clipwright.tool.timeline_insert_image import TimelineInsertImageTool
+from clipwright.tool.timeline_insert_image import (
+    TimelineInsertImageTool,
+    TimelineInsertImagesTool,
+)
+from clipwright.tool.workspace_search import (
+    GlobWorkspaceTool,
+    GrepWorkspaceTool,
+    ReadFileRangeTool,
+    WorkspaceTreeTool,
+)
 from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
+from clipwright.tool.vision_batch import ReadImageBatchTool
 
 
 def register_builtin_tools() -> None:
@@ -84,9 +110,15 @@ def register_builtin_tools() -> None:
     tools: list[BaseTool] = [
         # ── 视频 ──
         VideoTrimTool(),
+        VideoTrimBatchTool(),
+        ApplyEdlTool(),
         ImageToClipTool(),
-        ImageGenerateTool(),
         TimelineInsertImageTool(),
+        TimelineInsertImagesTool(),
+        GlobWorkspaceTool(),
+        WorkspaceTreeTool(),
+        ReadFileRangeTool(),
+        GrepWorkspaceTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
         VideoDownloadTool(),
@@ -104,7 +136,8 @@ def register_builtin_tools() -> None:
         # ── 视觉 ──
         SceneDetectTool(),
         SemanticMatchTool(),
-        VisionLLMTool(),
+        ReadImageTool(),
+        ReadImageBatchTool(),
         FaceDetectTool(),
         BackgroundRemoveTool(),
         # ── 特效 ──
@@ -121,11 +154,15 @@ def register_builtin_tools() -> None:
         TextDiagramTool(),
         # ── 素材 ──
         MaterialFilterTool(),
+        CandidateQueryTool(),
+        CandidateRerankTool(),
+        MaterialDedupeTool(),
         FrameValidatorTool(),
         # ── 质量 ──
         BlackFrameDetectTool(),
         AudioSilenceDetectTool(),
         SubtitleOverflowCheckTool(),
+        QualityReportTool(),
         # ── 其他 ──
         SpeedRampTool(),
         ColorCorrectTool(),
@@ -134,12 +171,20 @@ def register_builtin_tools() -> None:
         TransitionApplyTool(),
         WhisperTranscribeTool(),
         TimelineViewTool(),
+        TimelineProbeTool(),
+        SceneBudgetCheckTool(),
+        ScriptSceneDiffTool(),
+        AudioTimelineProbeTool(),
+        MixReportTool(),
         ProjectMemoryTool(),
         EventSpotTool(),
         ContentQueryTool(),
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
+        GenerateMGBatchTool(),
+        ValidateAnimationClipTool(),
+        PreviewAnimationClipTool(),
         DescribeLLMMGTool(),
         WebSearchTool(),
         WebFetchTool(),
@@ -153,6 +198,8 @@ def register_builtin_tools() -> None:
         EditFileTool(),
         # —— 产物读取（PRD §17.5）：list_artifacts / read_artifact ——
         ListArtifactsTool(),
+        ArtifactSearchTool(),
+        ArtifactSummaryTool(),
         ReadArtifactTool(),
         # —— 类型规范查询（只读；主 agent 判断"能不能豁免"用）——
         GetTypeSpecTool(),
@@ -184,7 +231,8 @@ __all__ = [
     # Vision
     "SceneDetectTool",
     "SemanticMatchTool",
-    "VisionLLMTool",
+    "ReadImageTool",
+    "ReadImageBatchTool",
     "FaceDetectTool",
     "BackgroundRemoveTool",
     # Effects

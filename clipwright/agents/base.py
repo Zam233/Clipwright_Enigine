@@ -436,6 +436,10 @@ class BaseAgent(ABC, Generic[I, O]):
         from clipwright.tool.registry import ToolRegistry
 
         wanted = list(names) if names is not None else list(self.tool_whitelist)
+        # 所有 Agent 都能直接读图：这是跨阶段共享的观察能力，不要求各 Agent 重复声明。
+        for _common in ("read_image", "read_image_batch"):
+            if _common not in wanted:
+                wanted.append(_common)
         out: list[dict[str, Any]] = []
         for name in wanted:
             tool = ToolRegistry.get(name)

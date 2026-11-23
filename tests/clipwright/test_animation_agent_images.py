@@ -34,6 +34,17 @@ _IMAGE_SECTION_HEADER = "可用图片列表（含语义描述）"
 _IMAGE_SELECT_INSTRUCTION = "选择语义匹配的图片放入动画 image 元素"
 
 
+@pytest.fixture(autouse=True)
+def _disable_mg_batch_prefetch(monkeypatch):
+    """图片语义索引测试关注 prompt/结果，不依赖全局工具注册带来的批量预取。"""
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(AnimationAgent, "_prefetch_mg_dynamic", _noop)
+    monkeypatch.setattr(AnimationAgent, "_prefetch_typed_mg", _noop)
+    yield
+
+
 def _ctx() -> AgentContext:
     return AgentContext(
         pipeline_id="p_a7_images",

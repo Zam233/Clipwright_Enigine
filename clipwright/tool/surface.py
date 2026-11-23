@@ -44,6 +44,57 @@ AGENT_TOOLS: tuple[str, ...] = (DELEGATE_AGENT, RESEARCH_AGENT,
                                 GET_AGENT_RUN, LIST_AGENT_RUNS, CANCEL_AGENT_RUN,
                                 ACKNOWLEDGE_DEGRADATION, ASK_USER)
 
+#: Kernel Exec 能力：不注册为普通 BaseTool，只在主 Agent 面上作为 dangerous schema。
+EXEC_TOOLS: tuple[str, ...] = ("run_shell", "run_python")
+
+#: Exec schema（参数必须和 gateway 契约一致）
+_EXEC_SCHEMAS: dict[str, dict[str, Any]] = {
+    "run_shell": {
+        "description": "请求执行一条 shell 命令（pwsh/bash）；必须由用户授权后才会执行。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "命令原文"},
+                "cwd": {"type": "string", "description": "任务工作区内的相对/绝对目录"},
+                "timeout_sec": {"type": "number", "default": 60},
+                "purpose": {"type": "string", "description": "为什么要执行这一步"},
+            },
+            "required": ["command"],
+        },
+    },
+    "run_python": {
+        "description": "请求执行一段 Python 脚本；必须由用户授权后才会执行。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "脚本正文"},
+                "cwd": {"type": "string", "description": "任务工作区内的相对/绝对目录"},
+                "timeout_sec": {"type": "number", "default": 60},
+                "purpose": {"type": "string", "description": "为什么要执行这一步"},
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+
+def exec_entries() -> list[SurfaceEntry]:
+    from clipwright.config import settings
+    if not bool(getattr(settings, "kernel_exec_enabled", False)):
+        return []
+    out: list[SurfaceEntry] = []
+    for name, spec in _EXEC_SCHEMAS.items():
+        out.append(SurfaceEntry(
+            name=name, tier="dangerous",
+            description=str(spec["description"]), available=True,
+            idempotent=False, dry_run=False,
+            schema={"type": "function", "function": {
+                "name": name, "description": str(spec["description"]),
+                "parameters": spec["parameters"],
+            }},
+        ))
+    return out
+
 _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
     DELEGATE_AGENT: {
         "description": (
@@ -502,6 +553,8 @@ def schemas(*, tiers: Iterable[str] = SURFACE_TIERS, available_only: bool = True
         if closeout and entry.tier != "read" and entry.name not in extra:
             continue
         out.append(entry.schema)
+    if not closeout:
+        out.extend(e.schema for e in exec_entries())
     return out
 
 
@@ -830,6 +883,39 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
             merged_inputs.setdefault("script_text", script_ref["text"])
             merged_inputs.setdefault("script_sha256", script_ref["sha256"])
 
+    if name == DELEGATE_AGENT:
+        from clipwright.services import stage_inputs as _si
+        from clipwright.services import task_blackboard as _bb
+
+        _stage = str(payload.get("stage") or "")
+        try:
+            _board = _bb.get(str(getattr(task, "id", "") or ""))
+            _errors = _si.preflight(
+                _stage, task=task, board=_board, inputs=merged_inputs,
+            )
+        except Exception as exc:  # noqa: BLE001 — 预检本身失败不阻断，交给阶段
+            logger.warning("阶段输入预检失败（跳过） %s: %s", _stage, exc)
+            _errors = []
+        # 缺上游（input_insufficient）仍交给阶段 Adapter 返回 needs，保持旧语义；
+        # 只有字段/类型错误在派发前拒绝，避免把 407s 白跑留到阶段内部。
+        _hard = [e for e in _errors if e.get("category") == "input_invalid"]
+        if _hard:
+            _errors = _hard
+            _bp = "; ".join(str(e.get("message") or "") for e in _errors[:5])[:300]
+            out = {
+                "status": "refused",
+                "error": f"阶段输入预检失败：{_bp}",
+                "failure": {
+                    "category": "input_invalid",
+                    "retryable": "needs_human",
+                    "blocking_point": _bp,
+                    "evidence": _errors,
+                },
+            }
+            out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                                   "refused", 0.0, out["error"])
+            return out
+
     spec = RunSpec(
         kind="stage" if name == DELEGATE_AGENT else "research",
         stage=str(payload.get("stage") or ""),
@@ -900,6 +986,17 @@ async def execute(
     from clipwright.tool.registry import ToolRegistry
 
     payload = dict(args or {})
+    if name in EXEC_TOOLS:
+        from clipwright.services import kernel_exec
+
+        if task is None and pipeline_id:
+            try:
+                from clipwright.services.agent_kernel import AgentKernel
+
+                task = AgentKernel().get(pipeline_id)
+            except Exception:  # noqa: BLE001
+                task = None
+        return await kernel_exec.run(task, name, payload)
     # 工作区上下文注入（closeout B11 发现的真 bug）：
     # 工具面是唯一入口，但 Task 的工作区信息只存在 `request.extra` 里，
     # 模型并不知道 `workspace_root`/`project_id` 该填什么 → list_artifacts /
@@ -910,6 +1007,7 @@ async def execute(
         provided = {
             "workspace_root": extra_ctx.get("workspace_root"),
             "project_id": extra_ctx.get("workspace_project_id") or extra_ctx.get("project_id"),
+            "task_id": str(getattr(task, "id", "") or ""),
         }
         try:
             entry0 = next((e for e in build_surface() if e.name == name), None)

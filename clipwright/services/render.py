@@ -3574,6 +3574,16 @@ class RenderService:
             v["fade_in"] = float(v.get("fade_in") or 0)
             v["fade_out"] = float(v.get("fade_out") or 0)
 
+    @staticmethod
+    def _audio_volume(value):
+        """0 是合法音量；不能用 `or 1.0` 把 0 抹成 1。"""
+        if value is None:
+            return 1.0
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 1.0
+
     async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M",                         video_cached: bool = False, loudness_target: float | None = None,
                          loudnorm_enabled: bool = True):
         """混音。任一路径失败都会抛出/返回 False，由 _mix_audio_safe 统一标记。
@@ -3597,7 +3607,7 @@ class RenderService:
                 _fout = seg.get("audio_fade_out_sec")
                 voices.append({
                     "path": s,
-                    "volume": float(seg.get("volume", 1.0) or 1.0),
+                    "volume": self._audio_volume(seg.get("volume", 1.0)),
                     "start": float(seg.get("start_sec", 0) or 0),
                     "dur": float(seg.get("duration_sec", 0) or 0),
                     # None = 未设置 → 由 _apply_default_cut_fades 补 30ms 切点淡化；
@@ -3609,7 +3619,10 @@ class RenderService:
                     # 轮 95：语音降噪标记（afftdn 消费）
                     "denoise": bool(seg.get("denoise")),
                     # 源内偏移与时间线位置分离
-                    "source_offset": float(seg.get("source_offset_sec", 0) or 0),
+                    "source_offset": float(
+                        seg.get("source_offset_sec",
+                                seg.get("source_offset", 0)) or 0
+                    ),
                     # 播放速率——atrim 时长按源时间换算 + atempo 补偿
                     "speed": float(seg.get("speed", 1) or 1),
                 })
@@ -3742,24 +3755,47 @@ class RenderService:
             voice = v0["path"]
             # 轮 84：单音源回退补齐音量/淡入淡出/响度归一——旧实现裸混入，
             # 仅 BGM 时 0.3 衰减失效（原电平炸耳）、仅旁白时无防爆音淡入
-            vol = float(v0.get("volume", 1.0) or 1.0)
+            vol = self._audio_volume(v0.get("volume", 1.0))
             fin = float(v0.get("fade_in") or 0)
             fout = float(v0.get("fade_out") or 0)
+            so = float(v0.get("source_offset", 0) or 0)
+            start = float(v0.get("start", 0) or 0)
+            dur = float(v0.get("dur", 0) or 0)
+            speed = float(v0.get("speed", 1) or 1)
             afilters: list[str] = []
-            if 0 < vol != 1.0:
+            # 单音源也必须尊重源内偏移和时间线位置；旧实现裸 map 1:a:0，
+            # 会把 2–3s 的旁白播成 0–1s，并忽略 start_sec。
+            if dur > 0:
+                afilters.append(f"atrim=start={so:.6f}:duration={dur * speed:.6f}")
+                afilters.append("asetpts=PTS-STARTPTS")
+            elif so > 0:
+                afilters.append(f"atrim=start={so:.6f}")
+                afilters.append("asetpts=PTS-STARTPTS")
+            if abs(speed - 1.0) > 1e-3:
+                remaining = speed
+                while remaining > 2.0:
+                    afilters.append("atempo=2.0")
+                    remaining /= 2.0
+                while remaining < 0.5:
+                    afilters.append("atempo=0.5")
+                    remaining /= 0.5
+                afilters.append(f"atempo={remaining:.6f}")
+            if start > 0:
+                afilters.append(f"adelay={int(start * 1000)}|{int(start * 1000)}")
+            if vol != 1.0:
                 afilters.append(f"volume={vol:.3f}")
             if fin > 0:
-                afilters.append(f"afade=t=in:st=0:d={fin:.2f}")
-            if fout > 0:
-                _vd = await asyncio.to_thread(_get_actual_duration, str(input_video))
-                if _vd > 0:
-                    afilters.append(f"afade=t=out:st={max(0.0, _vd - fout):.2f}:d={fout:.2f}")
+                afilters.append(f"afade=t=in:st={start:.6f}:d={fin:.2f}")
+            if fout > 0 and dur > 0:
+                fade_out_st = max(0.0, start + dur - fout)
+                afilters.append(f"afade=t=out:st={fade_out_st:.6f}:d={fout:.2f}")
             if loudnorm_enabled:
                 _lufs_fb = f"{loudness_target:g}" if loudness_target is not None else "-16"
                 afilters.append(f"loudnorm=I={_lufs_fb}:LRA=11:TP=-1.5")
             try:
+                _af_args = ["-af", ",".join(afilters)] if afilters else []
                 await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
-                               "-af", ",".join(afilters),
+                               *_af_args,
                                *(["-c:v","copy"] if video_cached else
                                  ["-c:v",encoder,"-preset",preset,"-pix_fmt",_current_pix_fmt(),
                                   *video_rate_args(encoder,bitrate),*_delivery_extra_args(encoder)]),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -48,3 +48,62 @@ class ToolInfo(BaseModel):
     available: bool = Field(
         default=False, description="当前环境是否可用"
     )
+
+
+class ToolError(BaseModel):
+    """统一错误四件套（PRD §6）：调用方按它决定重试/补上游/放弃。"""
+    category: str = "unknown"
+    blocking_point: str = ""
+    retryable: str = "retry_same"
+    suggestion: str = ""
+
+
+class BatchItem(BaseModel):
+    """批量工具的单条结果；永不让整批因一项失败而 500。"""
+    index: int
+    status: Literal["ok", "failed", "skipped"] = "ok"
+    error: Optional[str] = None
+    error_info: Optional[ToolError] = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchSummary(BaseModel):
+    total: int = 0
+    ok: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+class JobRef(BaseModel):
+    """长任务回执；工具立即返回它，执行进度通过 /api/tool/jobs 查询。"""
+    job_id: str
+    status: Literal[
+        "queued", "running", "done", "partial", "failed", "cancelled"
+    ] = "running"
+    total: int = 0
+    progress: dict[str, int] = Field(default_factory=dict)
+
+
+class BatchResult(BaseModel):
+    """批量工具统一返回形状（PRD §6 工具契约原则）。"""
+    job: Optional[JobRef] = None
+    status: Literal[
+        "queued", "running", "done", "partial", "failed", "cancelled"
+    ] = "done"
+    items: list[BatchItem] = Field(default_factory=list)
+    summary: BatchSummary = Field(default_factory=BatchSummary)
+    failures: list[BatchItem] = Field(default_factory=list)
+
+    @classmethod
+    def from_items(cls, items: list[BatchItem], *,
+                   job: JobRef | None = None) -> "BatchResult":
+        ok = sum(1 for i in items if i.status == "ok")
+        failed = sum(1 for i in items if i.status == "failed")
+        skipped = sum(1 for i in items if i.status == "skipped")
+        status = "done" if failed == 0 else ("partial" if ok else "failed")
+        return cls(
+            job=job, status=status, items=items,
+            summary=BatchSummary(total=len(items), ok=ok, failed=failed,
+                                 skipped=skipped),
+            failures=[i for i in items if i.status == "failed"],
+        )

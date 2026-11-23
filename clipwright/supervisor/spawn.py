@@ -65,8 +65,15 @@ async def spawn_subagent(
         raise SpawnError("role 不能为空")
 
     # 1) 拓扑：子代理不得再派生
-    if (getattr(context, "extra_params", {}) or {}).get("host_agent"):
+    _ctx_extra = dict(getattr(context, "extra_params", {}) or {})
+    if _ctx_extra.get("host_agent"):
         raise SpawnError("子代理不得再派生（星型拓扑，深度固定 1 层）")
+    # 工作区上下文：research 的 read_file/list_dir 没有它就只能按 CWD 解析，
+    # 最终被 assert_allowed_path 拒绝（2026-11-22 实机）。
+    _workspace_root = str(_ctx_extra.get("workspace_root") or "")
+    _project_id = str(
+        _ctx_extra.get("workspace_project_id") or _ctx_extra.get("project_id") or ""
+    )
 
     # 2) 工具子集
     spec = WorkerSpec(
@@ -77,6 +84,8 @@ async def spawn_subagent(
         model=str(model or ""),
         timeout_sec=float(timeout_sec or 60.0),
         max_turns=int(max_turns or 5),
+        workspace_root=_workspace_root,
+        project_id=_project_id,
     )
 
     # 2.5) 显式 route：只校验「provider 已配置 + 模型可用」，不受 model_whitelist 阻断
@@ -205,6 +214,9 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
     prompt = (
         f"你的角色：{spec.role}\n"
         f"{spec.system_prompt}\n\n"
+        f"当前任务工作区：{spec.workspace_root or '（未绑定）'}\n"
+        "读取文件可使用工作区相对路径（例如 reports/xxx.md、artifacts/xxx.json）；"
+        "定位文件优先用 glob_workspace / workspace_tree / grep_workspace / read_file_range。\n\n"
         "请完成本次任务并输出结论。只输出结论正文，不要寒暄。"
     )
     started = time.monotonic()
@@ -231,7 +243,11 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
                     system_prompt=f"你是被临时派来的子代理（{spec.role}）。只办交给你的那一件事。",
                     user_prompt=prompt,
                     tool_executor=build_executor(
-                        pid, node_id or "", allowed=spec.tools, on_call=_on_call,
+                        pid, node_id or "", allowed=spec.tools,
+                        workspace_root=spec.workspace_root,
+                        project_id=spec.project_id,
+                        cwd=spec.workspace_root,
+                        on_call=_on_call,
                     ),
                     tools=_schemas_for_worker(spec.tools),
                     max_tool_rounds=max(1, int(spec.max_turns or 5)),
@@ -250,6 +266,32 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         await _record_subagent_usage(pid, spec, usage)
         if node_id:
             tracker.update(node_id, cost_usd=cost_usd, duration_ms=duration_ms)
+
+        calls = list(entry.tool_calls)
+        if calls and not any(c.get("ok") for c in calls):
+            # worker 自己正常结束，不代表任务成功：所有工具调用都失败时，
+            # 它只是在没有证据的情况下写了一段结论，不能标 done。
+            message = "research 子代理的所有工具调用均失败"
+            reg.mark(worker_id, "failed")
+            if node_id:
+                tracker.finish(node_id, status="failed", last_output=message,
+                               duration_ms=duration_ms)
+            return {
+                "worker_id": worker_id,
+                "subagent_id": node_id,
+                "role": spec.role,
+                "status": "failed",
+                "error": message,
+                "failure": {
+                    "category": "tool_failed",
+                    "retryable": "retry_same",
+                    "blocking_point": calls[-1].get("error") or message,
+                    "evidence": calls[-5:],
+                    "tool_calls": len(calls),
+                },
+                "tool_calls": calls,
+                "duration_ms": duration_ms,
+            }
 
         reg.mark(worker_id, "done")
         if node_id:

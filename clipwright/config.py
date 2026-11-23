@@ -105,6 +105,16 @@ class Settings(BaseSettings):
     # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
     # on     = Kernel 执行（创作唯一入口；老 6 阶段管线已删除）
     agent_mode: Literal["off", "shadow", "on"] = "off"
+    # --- Kernel Exec（PRD kernel-exec-approval）---
+    kernel_exec_enabled: bool = False
+    # 强制所有执行（含 low）都走授权；默认关闭，保留 auto_low 的 low 直跑。
+    exec_require_approval: bool = False
+    exec_auto_low: bool = True
+    # auto / pwsh / powershell / bash / sh
+    exec_shell_profile: Literal["auto", "pwsh", "powershell", "bash", "sh"] = "auto"
+    exec_shell_fallback: bool = True
+    exec_history_limit: int = 20
+    exec_approval_ttl_sec: float = 600.0
     # 老 6 阶段管线执行开关——**已失效**（M3 删除执行引擎后，/run-async 与 retry
     # 永久 410，与此开关无关）。保留字段只为兼容旧配置文件的解析，不要再用它。
     pipeline_enabled: bool = False
@@ -171,6 +181,9 @@ class Settings(BaseSettings):
     agent_goal_v1: bool = True
     #: 同一 blocker 连续多少轮才允许宣告 blocked（照抄 DSH 的 3）
     agent_goal_blocked_after_rounds: int = 3
+    #: 质量门：final_timeline 已存在但 quality 未成功运行时，强制续跑一次；
+    #: 仍缺失则拒绝 done。测试 fixture 会显式关闭，避免每个 kernel 用例都派 quality。
+    agent_quality_gate: bool = True
 
     # --- 模型路由（PRD F8 / 开发计划 B4）---
     # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；

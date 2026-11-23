@@ -67,6 +67,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     tool_whitelist: tuple[str, ...] = (
         "list_animations", "describe_llm_mg",
         "pv_engine_doctor", "pv_engine_stills",
+        "preview_animation_clip",
     )
 
     def _text_anim_defs(self) -> list[Any]:
@@ -568,14 +569,34 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         if marker_type == "text":
                             if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
                                 continue
-                            await self._handle_text_animation_async(
-                                text_track, clip, anim_id, anim_name,
-                                marker, persona_style,
+                            # 文字动画是逐 clip 顺序 await 的长循环；必须把开始/结束
+                            # 写进任务事件流，否则前端只能停在 fact_need，看起来像卡死。
+                            _emit_progress(
+                                f"文字动画 {text_anim_count + 1} 开始：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "text_animation", "done": text_anim_count},
                             )
+                            try:
+                                await self._handle_text_animation_async(
+                                    text_track, clip, anim_id, anim_name,
+                                    marker, persona_style,
+                                )
+                            except Exception as exc:
+                                _emit_progress(
+                                    f"文字动画失败：{anim_name}（{type(exc).__name__}）",
+                                    {"anim_id": anim_id, "clip_id": str(clip.id),
+                                     "kind": "text_animation", "error": str(exc)[:200]},
+                                )
+                                raise
                             text_anim_count += 1
                             self._persist_timeline_tick(timeline)
                             logger.info("AnimationAgent: 【文字动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
+                            _emit_progress(
+                                f"文字动画 {text_anim_count} 完成：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "text_animation", "done": text_anim_count},
+                            )
                             add_event(context.pipeline_id, "animation", "text_anim",
                                       f"【文字动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
@@ -594,12 +615,30 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                       f"【逻辑动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "transition":
-                            self._handle_transition_animation(
-                                clip, prev_clip, anim_id, anim_name,
+                            _emit_progress(
+                                f"过渡动画 {transition_anim_count + 1} 开始：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "transition", "done": transition_anim_count},
                             )
+                            try:
+                                self._handle_transition_animation(
+                                    clip, prev_clip, anim_id, anim_name,
+                                )
+                            except Exception as exc:
+                                _emit_progress(
+                                    f"过渡动画失败：{anim_name}（{type(exc).__name__}）",
+                                    {"anim_id": anim_id, "clip_id": str(clip.id),
+                                     "kind": "transition", "error": str(exc)[:200]},
+                                )
+                                raise
                             transition_anim_count += 1
                             logger.info("AnimationAgent: 【过渡动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
+                            _emit_progress(
+                                f"过渡动画 {transition_anim_count} 完成：{anim_name}",
+                                {"anim_id": anim_id, "clip_id": str(clip.id),
+                                 "kind": "transition", "done": transition_anim_count},
+                            )
                             add_event(context.pipeline_id, "animation", "transition_anim",
                                       f"【过渡动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
@@ -647,6 +686,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 类型化 LLM 生成是等待型：优先用 animation_llm_concurrency，
             # 未配置则回落到 pipeline_concurrency（保持旧行为）。
             if logic_jobs:
+                await self._prefetch_mg_dynamic(logic_jobs, context)
+                await self._prefetch_typed_mg(logic_jobs, context)
                 _conc = (getattr(settings, "animation_llm_concurrency", None)
                          or getattr(settings, "pipeline_concurrency", 3))
                 sem = asyncio.Semaphore(max(1, int(_conc)))
@@ -1537,6 +1578,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if spec is None:
             logger.warning("AnimationAgent: 未注册的动画类型 %s，回退", anim_id)
             return False
+        prefetched_typed = getattr(self, "_mg_typed_cache", {}).pop(
+            str(getattr(vid_clip, "id", "") or ""), None)
+        if prefetched_typed and prefetched_typed.get("mg_def"):
+            if self._apply_cached_typed(
+                anim_track, vid_clip, anim_name, spec, text_content, prefetched_typed,
+            ):
+                return True
 
         # 同片去重：同类型同内容只播一次（用户要求「同片不重复播」）。
         # 逻辑动画是并发执行的，check-and-set 必须串行化，否则同内容会被并发生成两次。
@@ -2059,6 +2107,129 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
         return {}
 
+    async def _run_mg_batch_chunks(
+        self, items: list[dict[str, Any]], clip_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """按 generate_mg_batch 上限分块执行，返回 clip_id → row。"""
+        rows: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(items), 12):
+            chunk = items[offset:offset + 12]
+            chunk_ids = clip_ids[offset:offset + 12]
+            try:
+                result = await self.call_tool("generate_mg_batch", items=chunk,
+                                              concurrency=2)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("AnimationAgent: generate_mg_batch 分块失败: %s", exc)
+                continue
+            if str(getattr(result, "status", "")) not in ("success", "ok"):
+                continue
+            out = getattr(result, "output", None) or {}
+            for row, cid in zip(out.get("items") or [], chunk_ids):
+                if row.get("status") == "ok" and row.get("mg_def"):
+                    rows[cid] = row
+        return rows
+
+    async def _prefetch_typed_mg(self, logic_jobs: list[Any], context: Any) -> None:
+        """对类型化逻辑动画做一次批量预生成，结果按 clip_id 缓存。"""
+        if not self._typed_generation_enabled():
+            return
+        cache = getattr(self, "_mg_typed_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._mg_typed_cache = cache
+        items: list[dict[str, Any]] = []
+        clip_ids: list[str] = []
+        for _track, c, aid, _aname, marker, style in logic_jobs:
+            if str(aid) == "mg_dynamic":
+                continue
+            spec_id = str(aid)
+            from clipwright.animation.type_specs import get_spec
+
+            if get_spec(spec_id) is None:
+                continue
+            cid = str(getattr(c, "id", "") or "")
+            if not cid:
+                continue
+            text = self._strip_json_payload(
+                marker.get("text", self._extract_text_content(c, marker)) if isinstance(marker, dict) else "")
+            if not text:
+                text = "逻辑关系"
+            meta = c.metadata or {}
+            items.append({
+                "type_id": spec_id,
+                "text_content": text,
+                "duration_s": min(float(c.duration_sec or 4.0), 6.0),
+                "persona_style": style or {},
+                "scene_context": {
+                    "clip_id": cid, "title": meta.get("title", ""),
+                    "keywords": meta.get("keywords", []),
+                    "description": meta.get("description", ""),
+                },
+                "width": self._tl_width, "height": self._tl_height,
+            })
+            clip_ids.append(cid)
+        if not items:
+            return
+        rows = await self._run_mg_batch_chunks(items, clip_ids)
+        for cid, row in rows.items():
+            cache[cid] = {
+                "mg_def": row["mg_def"], "html": row.get("html", ""),
+                "issues": row.get("issues") or [], "motion": row.get("motion") or {},
+                "duration_s": row.get("duration_s"), "method": row.get("method") or "batch",
+            }
+        if cache:
+            add_event(context.pipeline_id, "animation", "mg_batch_prefetch",
+                      f"typed MG 批量预生成 {len(cache)} 段")
+
+    async def _prefetch_mg_dynamic(self, logic_jobs: list[Any], context: Any) -> None:
+        """对 mg_dynamic 作业做一次批量预生成，结果按 clip_id 缓存。
+
+        只覆盖 mg_dynamic、非事实片段；批量失败/任务数超上限时原路径逐段生成。
+        """
+        cache = getattr(self, "_mg_batch_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._mg_batch_cache = cache
+        items: list[dict[str, Any]] = []
+        clip_ids: list[str] = []
+        for _track, c, aid, _aname, marker, style in logic_jobs:
+            if str(aid) != "mg_dynamic":
+                continue
+            cid = str(getattr(c, "id", "") or "")
+            if not cid or cid in getattr(self, "_fact_clip_ids", set()):
+                continue
+            payload = marker.get("payload") if isinstance(marker, dict) else None
+            desc = str((payload or {}).get("description") or "") if isinstance(payload, dict) else ""
+            text = str((payload or {}).get("text") or "") if isinstance(payload, dict) else ""
+            if not desc:
+                desc = str((c.metadata or {}).get("description") or c.text or "")
+            if not desc:
+                continue
+            meta = c.metadata or {}
+            items.append({
+                "description": desc,
+                "text_content": self._strip_json_payload(text) or self._extract_text_content(c, marker),
+                "persona_style": style or {},
+                "scene_context": {
+                    "clip_id": cid, "title": meta.get("title", ""),
+                    "keywords": meta.get("keywords", []),
+                    "description": meta.get("description", ""),
+                },
+                "width": self._tl_width, "height": self._tl_height,
+            })
+            clip_ids.append(cid)
+        if not items:
+            return
+        rows = await self._run_mg_batch_chunks(items, clip_ids)
+        for cid, row in rows.items():
+            cache[cid] = {
+                "success": True, "mg_def": row["mg_def"],
+                "method": row.get("method") or "batch",
+            }
+        if cache:
+            add_event(context.pipeline_id, "animation", "mg_batch_prefetch",
+                      f"mg_dynamic 批量预生成 {len(cache)} 段")
+
     async def _handle_llm_mg(
         self,
         anim_track: Track,
@@ -2089,6 +2260,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 跳过")
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
+
+        cached_mg = getattr(self, "_mg_batch_cache", {}).pop(
+            str(getattr(vid_clip, "id", "") or ""), None)
+        if cached_mg:
+            class _CachedMG:
+                def __init__(self, result):
+                    self._result = result
+
+                async def generate(self, **_kwargs):
+                    return self._result
+
+                async def generate_best(self, **_kwargs):
+                    return self._result
+
+            mg_gen = _CachedMG(cached_mg)
 
         # 解析 JSON payload：优先 catalog 已解析的结构化字段（marker["payload"]），
         # 否则把 text_content 当 JSON 串解析（旧 marker 兼容）

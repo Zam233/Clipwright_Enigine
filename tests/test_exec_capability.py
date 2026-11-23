@@ -8,6 +8,7 @@ Step 保持未完成、任务转 paused，用户授权后 resume 继续。
 from __future__ import annotations
 
 import asyncio
+import tempfile
 
 import pytest
 
@@ -25,6 +26,7 @@ def _clean(monkeypatch):
     te.clear()
     gw.clear_gateway()
     monkeypatch.setattr(settings, "agent_mode", "on", raising=False)
+    monkeypatch.setattr(settings, "kernel_exec_enabled", True, raising=False)
     yield
     ak.reset_kernel_state()
     te.clear()
@@ -34,7 +36,12 @@ def _clean(monkeypatch):
 def _task():
     from clipwright.schema.task import Task
 
-    return Task(id="task_exec", request=TaskRequest(topic="x"))
+    from pathlib import Path
+
+    root = Path(tempfile.mkdtemp(prefix="clipwright_exec_test_"))
+    return Task(id="task_exec", request=TaskRequest(
+        topic="x", extra={"workspace_root": str(root)},
+    ))
 
 
 def test_refuses_when_mode_off(monkeypatch):

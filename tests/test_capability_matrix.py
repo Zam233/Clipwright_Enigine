@@ -151,9 +151,9 @@ def test_coverage_report_shape_and_current_reality():
     assert stat["total"] >= 55
     assert 0.0 <= stat["agent_callable_ratio"] <= 1.0
     # C0 基线：写成断言是为了让 C1 的进展可见（A7 目标 ≥90%）
-    assert stat["agent_callable"] < stat["total"] // 2, (
-        "若这里失败，说明 LLM 可见能力已大幅提升：请同步更新 PRD/C0 基线与 A7 判据"
-    )
+    # 2026-11-22：read_image/read_image_batch 对全部 Agent 开放，可见能力已越过
+    # 旧 C0 基线的一半；此处改为记录新的下界，避免把旧基线当成永久事实。
+    assert stat["agent_callable"] >= stat["total"] // 2
 
 
 def test_render_markdown_is_stable_and_complete():

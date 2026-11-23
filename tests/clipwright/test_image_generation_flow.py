@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 
 import pytest
@@ -21,9 +23,9 @@ from clipwright.providers.base import (
 from clipwright.schema.timeline import Timeline
 from clipwright.services import provider_sources as ps
 from clipwright.services import task_blackboard as bb
-from clipwright.services.image_generation import ImageGenerationService
+from plugins.image_generate.service import ImageGenerationService
 from clipwright.services.workspace_materials import ensure_workspace_source
-from clipwright.tool.image_generate import ImageGenerateTool
+from plugins.image_generate.tool import ImageGenerateTool
 from clipwright.tool.timeline_insert_image import TimelineInsertImageTool
 
 PNG = b"\x89PNG\r\n\x1a\nfake-image-bytes"
@@ -34,6 +36,7 @@ class FakeProvider:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.batch_calls = 0
 
     def default_model(self) -> str:
         return "fake-model"
@@ -43,6 +46,7 @@ class FakeProvider:
             sizes=("1024x1024",),
             max_n=2,
             cost_per_image_usd=0.01,
+            supports_batch=True,
         )
 
     async def probe(self, config=None) -> bool:
@@ -51,6 +55,10 @@ class FakeProvider:
     async def generate(self, request):
         self.calls += 1
         return [GeneratedImage(data=PNG, mime="image/png")]
+
+    async def generate_batch(self, requests):
+        self.batch_calls += 1
+        return [[GeneratedImage(data=PNG, mime="image/png")] for _ in requests]
 
 
 @pytest.fixture
@@ -98,6 +106,15 @@ async def test_generate_writes_workspace_and_reuses(workspace, fake_provider):
     assert second.ok and second.reused is True
     assert second.rel_path == first.rel_path
     assert fake_provider.calls == 1  # 同参数不重复调用 provider
+
+
+@pytest.mark.asyncio
+async def test_generate_many_uses_provider_batch(workspace, fake_provider):
+    svc = ImageGenerationService(workspace)
+    out = await svc.generate_many(prompts=["a", "b"], size="1024x1024")
+    assert [o.ok for o in out] == [True, True]
+    assert fake_provider.batch_calls == 1
+    assert fake_provider.calls == 0
 
 
 @pytest.mark.asyncio
@@ -189,3 +206,97 @@ async def test_timeline_insert_image_at_second(workspace, fake_provider):
     clips = [c for t in raw["tracks"] for c in t["clips"]]
     assert clips[0]["start_sec"] == 2.5
     bb.reset("task_img_at")
+
+
+@pytest.mark.asyncio
+async def test_image_generate_batch_partial_failure(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from plugins.image_generate import tool as tool_mod
+
+    class FakeService:
+        def __init__(self, _root):
+            self.root = _root
+
+        async def generate(self, *, prompt, **_kwargs):
+            if "bad" in prompt:
+                raise RuntimeError("provider failed")
+            return SimpleNamespace(ok=True, rel_path=f"materials/image/{prompt}.png",
+                                   sha256="x", mime="image/png", as_dict=lambda: {
+                                       "ok": True, "rel_path": f"materials/image/{prompt}.png",
+                                       "sha256": "x", "mime": "image/png",
+                                   })
+
+        async def generate_many(self, *, prompts, **_kwargs):
+            out = []
+            for prompt in prompts:
+                try:
+                    out.append(await self.generate(prompt=prompt))
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"{type(exc).__name__}: {exc}"
+                    out.append(SimpleNamespace(
+                        ok=False,
+                        as_dict=lambda msg=msg: {"ok": False, "error": msg},
+                    ))
+            return out
+
+    monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
+    tool = tool_mod.ImageGenerateBatchTool()
+    out = await tool.execute(
+        prompts=["good", "bad"], workspace_root=str(tmp_path), concurrency=2,
+    )
+    assert str(out.status) == "success"
+    assert out.output["summary"] == {"total": 2, "ok": 1, "failed": 1}
+    assert out.output["items"][1]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_image_generate_batch_insert_calls_timeline(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from plugins.image_generate import tool as tool_mod
+
+    class FakeService:
+        def __init__(self, _root):
+            self.root = _root
+
+        async def generate_many(self, *, prompts, **_kwargs):
+            return [SimpleNamespace(ok=True, rel_path=f"materials/image/{p}.png",
+                                    as_dict=lambda p=p: {"ok": True,
+                                                         "rel_path": f"materials/image/{p}.png"})
+                    for p in prompts]
+
+    monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
+    insert = AsyncMock(return_value=SimpleNamespace(output={"items": [{"status": "ok"}]}))
+    with patch("clipwright.tool.registry.ToolRegistry.execute", insert):
+        out = await tool_mod.ImageGenerateBatchTool().execute(
+            prompts=["a"], workspace_root=str(tmp_path), task_id="t1", insert=True,
+        )
+    assert insert.await_count == 1
+    assert insert.await_args.args[0] == "timeline_insert_images"
+    assert "insert" in out.output
+
+
+@pytest.mark.asyncio
+async def test_image_generate_batch_async_mode(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from plugins.image_generate import tool as tool_mod
+
+    class FakeService:
+        def __init__(self, _root):
+            self.root = _root
+
+        async def generate_many(self, *, prompts, **_kwargs):
+            return [SimpleNamespace(ok=True, rel_path=f"materials/image/{p}.png",
+                                    as_dict=lambda p=p: {"ok": True,
+                                                         "rel_path": f"materials/image/{p}.png"})
+                    for p in prompts]
+
+    monkeypatch.setattr(tool_mod, "ImageGenerationService", FakeService)
+    out = await tool_mod.ImageGenerateBatchTool().execute(
+        prompts=["a"], workspace_root=str(tmp_path), async_mode=True,
+    )
+    assert out.output["status"] == "running" and out.output["job_id"]
+    await asyncio.sleep(0.05)
+    job = __import__("clipwright.services.tool_jobs", fromlist=["tool_jobs"]).get(out.output["job_id"])
+    assert job is not None and job["status"] == "done"
+

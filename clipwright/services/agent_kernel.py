@@ -93,6 +93,14 @@ _MEMORY_LOADED: set[str] = set()
 #: 属于模型行为，不该直接判死刑：带着明确指令再推它一把，仍然出不来才判失败。
 _MAX_TIMELINE_CONTINUATIONS = 2
 _TIMELINE_CONTINUATIONS: dict[str, int] = {}
+#: quality 阶段已成功运行的任务（quality 门只推一次）
+_QUALITY_CONTINUATIONS: dict[str, int] = {}
+_QUALITY_CONTINUE_HINT = (
+    "\n\n## 质量门（必须遵守）\n"
+    "黑板里已有 `final_timeline`，但 quality 阶段还没有成功运行。\n"
+    "请派 `delegate_agent(stage=\"quality\")`，读取 `quality_report`，"
+    "确认 passed 后再 finish。质量未通过时不得宣称完成。"
+)
 
 # ── 降级决策守门（E2E 2026-10-29 用户裁定）──────────────────────────────
 # 「截断与回退不能被主 Agent 默认接受」：阶段内部一旦 note_degradation（LLM JSON
@@ -124,6 +132,36 @@ _FINAL_RECEIPT_HINT_TAIL = (
 )
 #: 允许 Kernel 补派的阶段（时间线生产者 + 素材/动画：它们最常上报可修降级）
 _TIMELINE_STAGE_FOR_RECOVERY = ("edit", "animation", "audio", "material")
+_QUALITY_STAGE = "quality"
+
+
+def _quality_state(task_id: str) -> str:
+    """返回 quality 门状态：missing / passed / failed。
+
+    不只看 stage status，还读取 quality 输出的 passed（v2 契约）。
+    """
+    try:
+        from clipwright.services import run_store as _rs
+
+        rows = [r for r in _rs.list_task(str(task_id))
+                if str(getattr(r, "stage", "") or "") == _QUALITY_STAGE]
+        if not rows:
+            return "missing"
+        for r in rows:
+            status = str(getattr(r, "status", "") or "")
+            outputs = getattr(r, "outputs", None) or {}
+            passed = outputs.get("passed") if isinstance(outputs, dict) else None
+            if status == "degraded":
+                continue
+            if status not in ("ok", "degraded"):
+                continue
+            if passed is False:
+                return "failed"
+        return "passed" if any(
+            str(getattr(r, "status", "") or "") in ("ok", "degraded") for r in rows
+        ) else "failed"
+    except Exception:  # noqa: BLE001 — 查不到就按未跑处理
+        return "missing"
 _DEGRADATION_CONTINUATIONS: dict[str, int] = {}
 #: 未处置降级：task_id → [degradation dict]
 _PENDING_DEGRADATIONS: dict[str, list[dict[str, Any]]] = {}
@@ -985,6 +1023,38 @@ class AgentKernel:
 
     # ── plan_only：主 agent 派发"生成制作规划书"的收尾（PRD plan-dispatch D1/D2）──
 
+    def _finish(self, task: Task, *, reason: str = "tool_loop_completed") -> None:
+        """兼容旧调用方的同步收尾入口（不再驱动主循环）。
+
+        保留"没有可渲染时间线就不许宣称完成"的硬守门；新代码仍走
+        `_run_tool_loop` 的异步收尾路径。
+        """
+        from clipwright.schema.task import TaskFinish
+
+        completed: list[str] = []
+        unfinished: list[str] = []
+        if reason in ("tool_loop_completed", "plan_completed"):
+            try:
+                from clipwright.services import task_blackboard as _bb
+
+                board = _bb.get(task.id) or {}
+                if board.get("final_timeline"):
+                    completed.append("final_timeline")
+                else:
+                    reason = "缺少可渲染时间线（final_timeline 为空）"
+                    unfinished.append("final_timeline")
+            except Exception:  # noqa: BLE001 — 守门失败不阻断收尾
+                pass
+        task.finish = TaskFinish(
+            conclusion=f"结束原因：{reason}", completed=completed,
+            unfinished=unfinished, reason=reason,
+        )
+        if task.status not in ("cancelled", "paused"):
+            task.status = "done" if reason in ("tool_loop_completed",
+                                               "plan_completed") else "failed"
+        if hasattr(task, "touch"):
+            task.touch()
+
     async def _finish_plan_only(self, task: Task) -> str:
         """plan_only 任务的守门：确保有分镜场景，并把 `reports/plan.json` 落盘。
 
@@ -1276,11 +1346,14 @@ class AgentKernel:
             status = str(result.get("status") or "")
             if status in ("pending_approval", "needs_human_review"):
                 # 等授权/等人审 ≠ 失败：任务暂停，处理完 resume 继续（PRD A1 / §18.10.4）
+                _approval_detail = {
+                    "tool": name, "approval_id": result.get("approval_id"),
+                    "risk": result.get("risk"), "note": result.get("note"),
+                }
+                if isinstance(result.get("approval"), dict):
+                    _approval_detail.update(result["approval"])
                 emit(task.id, "approval_request",
-                     f"工具 {name} 等待授权",
-                     {"tool": name, "approval_id": result.get("approval_id"),
-                      "risk": result.get("risk"), "note": result.get("note")},
-                     span="tool")
+                     f"工具 {name} 等待授权", _approval_detail, span="tool")
                 _CONTROL[task.id] = "pause"
                 task.status = "paused"
 
@@ -1477,6 +1550,24 @@ class AgentKernel:
                         gate_reason = "缺少可渲染时间线（final_timeline 为空）"
                     else:
                         _TIMELINE_CONTINUATIONS.pop(task.id, None)
+                        if bool(getattr(settings, "agent_quality_gate", True)):
+                            _qstate = _quality_state(task.id)
+                            if _qstate != "passed":
+                                done = int(_QUALITY_CONTINUATIONS.get(task.id, 0))
+                                if done < 1:
+                                    _QUALITY_CONTINUATIONS[task.id] = done + 1
+                                    emit(task.id, "narration",
+                                         "质量门：final_timeline 已就绪，但 quality 尚未通过；"
+                                         "先派 quality 并读报告",
+                                         {"kind": "quality_gate_continue",
+                                          "attempt": done + 1,
+                                          "quality_state": _qstate}, span="kernel")
+                                    return await self._run_tool_loop(
+                                        task, started=started, shadow=shadow,
+                                        extra_hint=_QUALITY_CONTINUE_HINT,
+                                    )
+                                gate_reason = ("quality_failed" if _qstate == "failed"
+                                               else "quality_not_run")
                         # 注意：不要在这里清 `_KERNEL_RECOVERY`——循环会反复进这段
                         # （有 final_timeline 就走 else），清了等于把补派预算无限续，
                         # 造成 gate→补派→gate 的无限递归（实测 RecursionError）。

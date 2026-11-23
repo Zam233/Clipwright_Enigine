@@ -32,6 +32,11 @@ SUPERVISOR_TOOLS: frozenset[str] = frozenset({
     "write_file",
     "web_search",
     "web_fetch",
+    "grep_workspace",
+    "glob_workspace",
+    "workspace_tree",
+    "read_file_range",
+    "read_artifact",
 })
 
 #: 执行类工具：授予即代表该 worker 有「动手」能力 → 必须过两级审核门
@@ -55,6 +60,10 @@ class WorkerSpec:
     budget_usd: Optional[float] = None
     max_turns: int = 5
     kind: str = "ephemeral"
+    #: 当前任务工作区（子代理的 read_file/list_dir/write_file 按它解析相对路径）
+    workspace_root: str = ""
+    #: 工作区项目 id（工作区根缺失时由工具按 id 反查）
+    project_id: str = ""
 
     @property
     def needs_exec_review(self) -> bool:

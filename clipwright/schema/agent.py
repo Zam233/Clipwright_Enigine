@@ -82,8 +82,6 @@ class FailureReport(BaseModel):
     retryable: str = Field(default="retry_same", description="可重试性，取值见 RETRY_MODES")
     evidence: list[dict[str, Any]] = Field(default_factory=list,
                                            description="证据引用 [{kind, ref}]")
-
-
 class Need(BaseModel):
     """v2 唯一缺项真相（每个缺失字段一条，不得拼成字符串）。
 
@@ -225,6 +223,10 @@ class StructureInput(BaseModel):
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书（含 markdown/scenes）"
     )
+    image_assets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="子 Agent 可用图片资产 [{path, tags, description}]（含主 Agent 新生成的图片）",
+    )
     vision_prompt: Optional[str] = Field(
         default=None, description="Persona 的视觉需求 Prompt，注入 LLM system prompt"
     )
@@ -258,6 +260,10 @@ class MaterialInput(BaseModel):
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书"
     )
+    image_assets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="子 Agent 可用图片资产 [{path, tags, description}]（含主 Agent 新生成的图片）",
+    )
     resume_checkpoint: Optional[dict[str, Any]] = Field(
         default=None,
         description="断点续跑：同一输入摘要下的已完成场景与部分候选（stage_subagent 注入）",
@@ -284,6 +290,10 @@ class EditInput(BaseModel):
     )
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书（时长/结构）"
+    )
+    image_assets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="子 Agent 可用图片资产 [{path, tags, description}]（含主 Agent 新生成的图片）",
     )
 
 
@@ -351,6 +361,10 @@ class AudioInput(BaseModel):
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书"
     )
+    image_assets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="子 Agent 可用图片资产 [{path, tags, description}]（含主 Agent 新生成的图片）",
+    )
 
 
 class AudioOutput(AgentOutputBase):
@@ -371,6 +385,10 @@ class QualityInput(BaseModel):
     )
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书"
+    )
+    image_assets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="子 Agent 可用图片资产 [{path, tags, description}]（含主 Agent 新生成的图片）",
     )
 
 

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -345,6 +345,8 @@ class ImageProviderCapabilities:
     cost_per_image_usd: float | None = None
     #: size 参数方言：wxh（"1024x1024"）/ openai_size（固定档位）/ auto
     size_dialect: str = "wxh"
+    #: provider 是否实现可选的 `generate_batch`（一次请求返回多 prompt 的结果）
+    supports_batch: bool = False
 
 
 @dataclass
@@ -370,6 +372,20 @@ class GeneratedImage:
 
 
 @runtime_checkable
+@runtime_checkable
+class BatchImageProvider(Protocol):
+    """可选扩展：一次调用生成多个 prompt 的图。
+
+    返回值必须与 requests 等长、同序；单个请求失败时抛异常或返回空列表，
+    由调用方按项隔离。未实现该协议的 provider 仍走逐项 `generate`。
+    """
+
+    async def generate_batch(
+        self, requests: Sequence[ImageGenerationRequest],
+    ) -> list[list[GeneratedImage]]:
+        ...
+
+
 class ImageProvider(Protocol):
     """图像生成 provider —— 只做协议与厂商翻译，不写盘/不记账。"""
 

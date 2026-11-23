@@ -101,3 +101,22 @@ def ensure_workspace_source(root: str | Path) -> str:
             logger.warning("工作区素材源注册失败: %s", exc)
             return ""
     return sid
+
+
+def workspace_image_entries(workspace_root: str | Path | None) -> list[dict]:
+    """工作区 materials/image 图片 → image_assets（host-generic，无旧插件历史）。"""
+    if not workspace_root:
+        return []
+    root = Path(str(workspace_root)).expanduser()
+    image_dir = root / "materials" / "image"
+    if not image_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(image_dir.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in _IMAGE_EXT:
+            continue
+        stem = p.stem.replace("_", " ").strip()
+        out.append({"path": str(p), "asset_id": p.stem,
+                    "tags": sorted(_tokens(stem))[:8],
+                    "description": stem[:120]})
+    return out

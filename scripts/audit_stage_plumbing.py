@@ -58,6 +58,13 @@ EXTERNAL_EXTRA_KEYS: dict[str, str] = {
 
 #: 已确认「故意不接线」的字段（每条必须有理由，否则就是缺陷）
 ALLOW_UNWIRED: dict[str, str] = {
+    "StructureInput.image_assets": "由 workspace 生成图清单注入，不是黑板/显式字段",
+    "MaterialInput.image_assets": "同上",
+    "EditInput.image_assets": "同上",
+    "AudioInput.image_assets": "同上",
+    "QualityInput.image_assets": "同上",
+    "AnimationInput.retry_clip_ids": "由重派调用方显式 inputs 传，不写黑板",
+    "AnimationInput.background_context": "由主 Agent 显式 inputs 传，不写黑板",
     "StructureInput.context": "由 assemble 参数 ctx 直接注入，不走 data",
     "MaterialInput.context": "同上",
     "EditInput.context": "同上",

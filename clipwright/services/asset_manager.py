@@ -286,9 +286,9 @@ class AssetManager:
         flagged: list[str] = []
         for asset in self._assets.values():
             path = asset.file_path or ""
-            if asset.media_type == "image" and ToolRegistry.get("vision_llm") is not None:
+            if asset.media_type == "image" and ToolRegistry.get("read_image") is not None:
                 try:
-                    result = await ToolRegistry.execute("vision_llm", input_path=path)
+                    result = await ToolRegistry.execute("read_image", path=path)
                     out = result.output or {}
                     flags = out.get("flags") or out.get("violations") or []
                     if flags:

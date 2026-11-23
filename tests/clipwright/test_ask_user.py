@@ -32,7 +32,7 @@ def test_event_contract_covers_question_answer_progress_and_termination():
     """
     from clipwright.schema.task import EVENT_TYPES
 
-    assert len(EVENT_TYPES) == 31
+    assert len(EVENT_TYPES) == 35
     assert len(set(EVENT_TYPES)) == len(EVENT_TYPES), "事件类型不许重复"
     assert {"question", "answer", "progress"} <= set(EVENT_TYPES)
     assert {"goal_update", "soft_landing"} <= set(EVENT_TYPES)

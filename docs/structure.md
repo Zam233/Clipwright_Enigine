@@ -51,7 +51,7 @@
 |------|----------|
 | 视频 | `video_trim` `video_concat` `video_overlay` `video_download` `video_crop` `video_thumbnail` `video_speed` `video_blur` `media_probe` |
 | 音频 | `audio_extract` `audio_normalize` `audio_mix` `audio_replace` `bpm_detect` |
-| 视觉 | `scene_detect` `semantic_match` `vision_llm` `face_detect` `background_remove` |
+| 视觉 | `scene_detect` `semantic_match` `read_image` `face_detect` `background_remove` |
 | 特效 | `effect_vignette` `watermark` `video_filter` `chroma_key` `video_stabilize` |
 | 文字 | `generate_text_video` `subtitle_burn` `text_design` `typewriter_animation` `tracking_text` |
 | MG 动画 | `mg_dynamic` — LLM 动态生成完整 MG JSON → MGRenderer → Hyperframes（见 `llm_mg` 插件） |

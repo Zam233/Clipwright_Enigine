@@ -124,7 +124,7 @@ PluginData/plugins/{plugin_id}/config.yaml
 - 内置插件：
   | 插件 | provider id | 说明 |
   |------|-------------|------|
-  | `plugins/image_providers` | `openai_compatible` | 通用 OpenAI 兼容：`POST {base_url}/images/generations`，`b64_json`/`url` 双响应 |
+  | `plugins/image_generate` | `openai_compatible` | 通用 OpenAI 兼容：`POST {base_url}/images/generations`，`b64_json`/`url` 双响应 |
   | `plugins/image_gpt_images` | `openai_gpt_image` | `gpt-image-1` 专有：固定 size 档位、quality 参数 |
 - 新增厂商 = 新插件实现 `ImageProvider`，**不要**在 Engine 里加厂商分支。
 - 生成工具 `image_generate`（工作区落盘/幂等账本/素材可见性）与 `timeline_insert_image`
@@ -200,7 +200,7 @@ class MyTool(BaseTool):
 # 在 tool/__init__.py 的 register_builtin_tools() 中添加
 ```
 
-**已注册的 Tool**：`video_trim` `video_concat` `video_overlay` `video_download` `video_crop` `video_thumbnail` `video_speed` `video_blur` `media_probe` `audio_extract` `audio_normalize` `audio_mix` `audio_replace` `bpm_detect` `scene_detect` `semantic_match` `vision_llm` `face_detect` `background_remove` `effect_vignette` `watermark` `video_filter` `chroma_key` `video_stabilize` `generate_text_video` `subtitle_burn` `text_design` `typewriter_animation` `tracking_text` `mg_dynamic` `material_filter` `frame_validator` `black_frame_detect` `audio_silence_detect` `subtitle_overflow` `speed_ramp` `color_correct` `lut_apply` `whisper_transcribe` `transition_apply` `voice_clone` `text_to_speech`
+**已注册的 Tool**：`video_trim` `video_concat` `video_overlay` `video_download` `video_crop` `video_thumbnail` `video_speed` `video_blur` `media_probe` `audio_extract` `audio_normalize` `audio_mix` `audio_replace` `bpm_detect` `scene_detect` `semantic_match` `read_image` `face_detect` `background_remove` `effect_vignette` `watermark` `video_filter` `chroma_key` `video_stabilize` `generate_text_video` `subtitle_burn` `text_design` `typewriter_animation` `tracking_text` `mg_dynamic` `material_filter` `frame_validator` `black_frame_detect` `audio_silence_detect` `subtitle_overflow` `speed_ramp` `color_correct` `lut_apply` `whisper_transcribe` `transition_apply` `voice_clone` `text_to_speech`
 
 ## 新增一个 Skill
 
@@ -349,3 +349,14 @@ LLM 生成 MG JSON
   └── LLM 不可用 → 关键词匹配已有模板 → drawtext 最终降级
 ```
 ```
+
+
+## 派发前预检（tool ergonomics R7）
+
+`delegate_agent` 会在派发前调用 `services/stage_inputs.preflight(stage, task, board, inputs)`
+构造对应 `*Input`：
+
+- `input_invalid`：字段/类型/颜色等 Pydantic 错误，直接拒绝派发，附 `field/message/suggestion`；
+- `input_insufficient`：缺上游，保持软处理，交给阶段返回 `needs`。
+
+新增阶段输入字段时必须同步预检，避免 `glow_color=""` 这类错误在阶段内部白跑。

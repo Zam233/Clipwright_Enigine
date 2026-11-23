@@ -262,12 +262,10 @@ def test_blackboard_reset_timeline_allows_upstream_redo():
     bb.put(tid, "timeline", tl_edit, by="edit")
     bb.put(tid, "timeline", tl_audio, by="audio")
     assert bb.owner_of(tid, "timeline") == "audio"
-    # 正常 put 必须拒绝倒序写
-    try:
-        bb.put(tid, "timeline", tl_edit, by="animation")
-        assert False, "倒序写应被拒绝"
-    except bb.BlackboardError:
-        pass
+    # 2026-11-15 后的策略：timeline 允许任意注册生产者覆盖，避免 animation
+    # 重跑被旧 audio owner 硬拒绝；受控回退仍用 reset_timeline。
+    bb.put(tid, "timeline", tl_edit, by="animation")
+    assert bb.owner_of(tid, "timeline") == "animation"
     # 受控 reset 才允许回退
     bb.reset_timeline(tid, tl_edit, by="edit", reason="redo animation")
     assert bb.owner_of(tid, "timeline") == "edit"

@@ -14,6 +14,10 @@ from pathlib import Path
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
 from clipwright.services import task_blackboard as bb
+from clipwright.services import tool_jobs
+from clipwright.tool.batch_contract import attach_batch_contract
+
+_BATCH_CACHE: dict[str, dict] = {}
 from clipwright.services.intent_apply import (
     PatchOp,
     PatchPlan,
@@ -75,6 +79,35 @@ def _resolve_asset(asset_ref: str, root: Path | None) -> Path:
     return target.resolve()
 
 
+def _validate_position(position: str) -> str:
+    pos = str(position or "end").strip().lower()
+    if not (pos in ("start", "end") or pos.startswith("after:") or pos.startswith("at:")):
+        raise ValueError(
+            f"position 不支持: {position!r}（可用 start / end / after:<clip_id> / at:<sec>）"
+        )
+    return pos
+
+
+def _image_op(
+    asset: Path, *, position: str, duration_sec: float, motion: str, note: str,
+) -> PatchOp:
+    return PatchOp(
+        op="add",
+        new_clip={
+            "kind": "image",
+            "asset_id": str(asset),
+            "position": position,
+            "duration_sec": max(1.0, float(duration_sec or 4.0)),
+            "metadata": {
+                "source": "generated",
+                "kenburns": str(motion or "ken_burns").lower() != "still",
+            },
+        },
+        source_index=0,
+        note=note,
+    )
+
+
 class TimelineInsertImageTool(BaseTool):
     """把一张工作区图片按位置插入时间线（可先 dry-run 预览）。"""
 
@@ -93,6 +126,7 @@ class TimelineInsertImageTool(BaseTool):
         "type": "object",
         "properties": {
             "task_id": {"type": "string", "description": "当前任务 id（时间线在黑板里）"},
+            "idempotency_key": {"type": "string"},
             "asset_ref": {"type": "string", "description": "工作区相对路径，如 materials/image/abc.png"},
             "position": {"type": "string", "default": "end",
                          "description": "start / end / after:<clip_id>"},
@@ -207,4 +241,158 @@ class TimelineInsertImageTool(BaseTool):
                 "clips_after": report.clips_after,
                 "warnings": [p.model_dump() for p in report.problems if p.level == "warning"],
             },
+        )
+
+
+class TimelineInsertImagesTool(BaseTool):
+    """批量把工作区图片插入时间线；逐项返回，单张失败不拖垮整批。"""
+
+    name = "timeline_insert_images"
+    description = (
+        "批量把工作区图片插入当前任务时间线。每项可指定 position/duration_sec/motion；"
+        "返回每个 item 的 clip_id 与失败原因，dry_run=true 只校验。"
+    )
+    capability = "timeline_insert_images"
+    capability_priority = 10
+    permission_tier = "write_local"
+    agent_callable = True
+    dry_run_capable = True
+    dependencies: list[str] = []
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "当前任务 id（时间线在黑板里）"},
+            "items": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "asset_ref": {"type": "string"},
+                        "position": {"type": "string", "default": "end"},
+                        "duration_sec": {"type": "number", "default": 4},
+                        "motion": {"type": "string", "default": "ken_burns"},
+                    },
+                    "required": ["asset_ref"],
+                },
+            },
+            "project_id": {"type": "string"},
+            "workspace_root": {"type": "string"},
+        },
+        "required": ["task_id", "items"],
+    }
+
+    async def execute(
+        self, *, task_id: str = "", items: list[dict] | None = None,
+        project_id: str = "", workspace_root: str = "", dry_run: bool = False,
+        idempotency_key: str = "", **kwargs,
+    ) -> ToolExecResult:
+        tid = str(task_id or "").strip()
+        if not tid:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="需要 task_id（时间线在黑板上）")
+        rows = [x for x in (items or []) if isinstance(x, dict)]
+        if not rows:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error="items 不能为空")
+        if len(rows) > 50:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=f"items 最多 50 项（收到 {len(rows)}）")
+        if idempotency_key and idempotency_key in _BATCH_CACHE:
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output=dict(_BATCH_CACHE[idempotency_key]))
+        job = tool_jobs.create("timeline_insert_images", len(rows))
+        heartbeat = tool_jobs.start_heartbeat(task_id, job)
+        root = _resolve_root(project_id, workspace_root)
+        try:
+            timeline, key = _load_timeline(tid)
+        except Exception as exc:  # noqa: BLE001
+            tool_jobs.stop_heartbeat(heartbeat)
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=str(exc))
+        owner = bb.owner_of(tid, "timeline")
+        if owner and owner != "edit":
+            tool_jobs.stop_heartbeat(heartbeat)
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error=(f"时间线当前由 {owner} 阶段写入（已定稿），不能再插图片；"
+                       "请先让下游阶段重跑或在编辑阶段插入"),
+            )
+
+        operations: list[PatchOp] = []
+        results: list[dict] = []
+        for i, row in enumerate(rows):
+            try:
+                asset = _resolve_asset(str(row.get("asset_ref") or ""), root)
+                pos = _validate_position(str(row.get("position") or "end"))
+                operations.append(_image_op(
+                    asset, position=pos,
+                    duration_sec=float(row.get("duration_sec") or 4.0),
+                    motion=str(row.get("motion") or "ken_burns"),
+                    note=f"timeline_insert_images:{i}:{asset.name}",
+                ))
+                results.append({"index": i, "status": "queued", "asset_ref": str(asset)})
+            except Exception as exc:  # noqa: BLE001 — 单张失败不影响其它
+                results.append({"index": i, "status": "failed", "error": str(exc)})
+
+        if not operations:
+            tool_jobs.stop_heartbeat(heartbeat)
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="所有 item 都无效", output={"items": results},
+            )
+        plan = PatchPlan(ops=operations)
+        if dry_run:
+            try:
+                report = validate_patch(timeline, plan)
+            except Exception as exc:  # noqa: BLE001
+                return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                      error=f"预检失败: {exc}")
+            for item in results:
+                if item["status"] == "queued":
+                    item["status"] = "preview"
+            tool_jobs.finish(job.job_id, failed=0)
+            tool_jobs.stop_heartbeat(heartbeat)
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name=self.name,
+                output=attach_batch_contract({
+                    "job_id": job.job_id, "dry_run": True, "source_key": key,
+                    "items": results, "report": report.model_dump(),
+                    "problems": [p.model_dump() for p in report.problems]},
+                    job_id=job.job_id),
+            )
+
+        new_timeline, report = apply_patch(timeline, plan)
+        if report.has_errors():
+            tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
+            tool_jobs.stop_heartbeat(heartbeat)
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="补丁未执行（存在硬错误）",
+                output={"job_id": job.job_id, "items": results,
+                        "problems": [p.model_dump() for p in report.problems]},
+            )
+        try:
+            bb.put(tid, "timeline", new_timeline.model_dump(mode="json"), by="edit")
+        except Exception as exc:  # noqa: BLE001 — 黑板拒绝时如实回报
+            tool_jobs.stop_heartbeat(heartbeat)
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                  error=f"写回黑板失败: {exc}")
+
+        added = list(report.added_clip_ids)
+        queued = [x for x in results if x["status"] == "queued"]
+        for pos, item in enumerate(queued):
+            item["status"] = "ok"
+            if pos < len(added):
+                item["clip_id"] = str(added[pos])
+        tool_jobs.finish(job.job_id, failed=len([x for x in results if x["status"] == "failed"]))
+        output = attach_batch_contract({"job_id": job.job_id, "items": results,
+                "added_clip_ids": added, "clips_before": report.clips_before,
+                "clips_after": report.clips_after,
+                "warnings": [p.model_dump() for p in report.problems
+                             if p.level == "warning"]}, job_id=job.job_id)
+        if idempotency_key:
+            _BATCH_CACHE[idempotency_key] = dict(output)
+        return ToolExecResult(
+            status=ToolStatus.SUCCESS, tool_name=self.name, output=output,
         )

@@ -416,6 +416,16 @@ async def run_loop(task: Any, *, context_text: str = "",
                  {"tool": name, "status": "refused", "dry_run": True},
                  causation_id=f"seq:{_seq_of(call_event)}")
             return result
+        if dry_run and name in ("run_shell", "run_python"):
+            result = {"status": "refused",
+                      "error": "dry-run 预览模式不执行 shell/python",
+                      "note": "执行能力必须关掉 dry_run 并经用户授权"}
+            calls.append({"tool": name, "ok": False, "status": "refused",
+                          "duration_ms": 0})
+            emit(task_id, "tool_result", f"{name} → refused（dry-run）",
+                 {"tool": name, "status": "refused", "dry_run": True},
+                 causation_id=f"seq:{_seq_of(call_event)}")
+            return result
 
         t0 = time.monotonic()
         try:

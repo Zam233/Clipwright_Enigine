@@ -24,7 +24,7 @@ import argparse
 import sys
 import traceback
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from _repo_paths import frontend_root as _frontend_root
 

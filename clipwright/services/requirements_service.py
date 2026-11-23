@@ -1887,7 +1887,7 @@ class RequirementsService:
             if isinstance(anim_style, dict):
                 visual_config = anim_style
         try:
-            from clipwright.services.generated_assets import generated_image_entries
+            from clipwright.services.workspace_materials import workspace_image_entries
             from clipwright.services import stage_subagent
 
             out = await stage_subagent.run_inline(
@@ -1895,7 +1895,7 @@ class RequirementsService:
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
                     # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
-                    image_assets=generated_image_entries(),
+                    image_assets=workspace_image_entries(None),
                     creative_brief=brief_data, production_plan=plan_data,
                 ),
                 context,

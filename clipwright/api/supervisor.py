@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -558,6 +559,25 @@ async def post_pipeline_exec(
         raise HTTPException(status_code=409, detail="预算已耗尽，拒绝新的执行请求")
 
     timeout_sec = float(payload.timeout_sec or 0.0)  # 0 → 网关回落到设置项 exec_timeout_sec
+    # 任务存在时，手动入口也强制 cwd 在工作区内；无任务上下文的手动执行保持旧行为。
+    try:
+        from clipwright.services.agent_kernel import AgentKernel
+        from clipwright.services import workspace_guard
+
+        _task = AgentKernel().get(pipeline_id)
+        if _task is not None:
+            try:
+                payload.cwd = workspace_guard.assert_cwd_in_workspace(
+                    _task, payload.cwd,
+                ).as_posix()
+            except workspace_guard.WorkspaceGuardError as exc:
+                raise HTTPException(status_code=400, detail={
+                    "code": exc.category, "message": str(exc), **exc.detail,
+                })
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
     if kind == "python":
         out = await gw.run_python(
             pipeline_id, payload.code, cwd=payload.cwd, timeout_sec=timeout_sec,
@@ -588,8 +608,108 @@ async def get_pending_approvals(pipeline_id: str, request: Request) -> dict:
     from clipwright.supervisor.gateway import pending_approvals
 
     _enforce_pipeline_owner(request, pipeline_id)
+    _restore_store_pending(pipeline_id)
     items = pending_approvals(pipeline_id)
     return {"pipeline_id": pipeline_id, "count": len(items), "items": items}
+
+
+def _restore_store_pending(pipeline_id: str) -> list[dict]:
+    """任务重启后把持久化 approval 灌回 gateway；返回 store 里的 pending。"""
+    try:
+        from clipwright.services import exec_store
+        from clipwright.services.agent_kernel import AgentKernel
+
+        task = AgentKernel().get(pipeline_id)
+        if task is None:
+            return []
+        items = exec_store.list_pending(task)
+        from clipwright.supervisor import gateway as gw
+
+        gw.restore_approvals(pipeline_id, items)
+        return items
+    except Exception:  # noqa: BLE001
+        return []
+
+
+
+
+def _exec_decision_duplicate(pipeline_id: str, approval_id: str) -> dict | None:
+    """已消费的 approval 幂等返回，避免重复执行。"""
+    try:
+        from clipwright.services import exec_store
+        from clipwright.services.agent_kernel import AgentKernel
+
+        task = AgentKernel().get(pipeline_id)
+        if task is None:
+            return None
+        item = exec_store.get_approval(task, approval_id)
+        if not item:
+            return None
+        status = str(item.get("status") or "")
+        if status in ("executed", "rejected", "expired"):
+            return {"status": status, "approval_id": approval_id,
+                    "task_id": pipeline_id, "duplicate": True}
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+async def _after_exec_decision(pipeline_id: str, approval_id: str, *,
+                               approved: bool, record: dict) -> None:
+    """同步审批存储、写入历史，并在任务 paused 时 resume。"""
+    try:
+        from clipwright.services import exec_store
+        from clipwright.schema.exec import ExecHistoryItem
+
+        kernel = None
+        try:
+            from clipwright.services.agent_kernel import AgentKernel
+
+            kernel = AgentKernel()
+            task = kernel.get(pipeline_id)
+        except Exception:
+            task = None
+        if task is None:
+            return
+        item = exec_store.get_approval(task, approval_id) or {}
+        exec_store.update_approval(
+            task, approval_id,
+            status="executed" if approved else "rejected",
+            decided_at=datetime.now(timezone.utc).isoformat(),
+        )
+        history = ExecHistoryItem(
+            exec_request_id=str(item.get("exec_request_id") or ""),
+            kind=str(item.get("kind") or "shell"),  # type: ignore[arg-type]
+            text=str(item.get("command") or "")[:2000],
+            cwd=str(item.get("cwd") or ""),
+            exit_code=record.get("exitCode"),
+            status="done" if approved and record.get("exitCode") == 0 else (
+                "failed" if approved else "refused"),
+            risk=str(item.get("risk") or "high"),  # type: ignore[arg-type]
+            decided_by="user",
+            output_tail=str(record.get("outputTail") or "")[:400],
+        )
+        exec_store.append_history(task, history)
+        task.pending_exec_approval_id = ""
+        try:
+            from clipwright.services.task_events import emit
+
+            emit(pipeline_id, "approval_result",
+                 "执行授权已批准" if approved else "执行授权被拒绝",
+                 {"approval_id": approval_id, "status": "approved" if approved else "rejected",
+                  "exec_request_id": str(item.get("exec_request_id") or ""),
+                  "exit_code": record.get("exitCode")})
+        except Exception:  # noqa: BLE001
+            pass
+        task.hints.append(
+            f"Exec approval {approval_id} {('已执行' if approved else '被用户拒绝')}："
+            f"{str(item.get('command') or '')[:200]}；"
+            f"exit={record.get('exitCode')}；output={str(record.get('outputTail') or '')[:500]}"
+        )
+        if getattr(task, "status", "") == "paused":
+            await kernel.resume(pipeline_id)
+    except Exception as exc:  # noqa: BLE001 — 审批结果不能因同步失败丢掉
+        logger.warning("exec approval 同步失败 %s: %s", approval_id, exc)
 
 
 @router.post("/{pipeline_id}/exec/{approval_id}/approve")
@@ -604,8 +724,12 @@ async def post_approve_exec(
     from clipwright.supervisor.gateway import approve
 
     _enforce_pipeline_owner(request, pipeline_id)
+    dup = _exec_decision_duplicate(pipeline_id, approval_id)
+    if dup is not None:
+        return dup
+    _restore_store_pending(pipeline_id)
     try:
-        return await approve(
+        out = await approve(
             pipeline_id, approval_id,
             confirm_high_risk=payload.confirm_high_risk,
             second_confirm=payload.second_confirm,
@@ -614,6 +738,10 @@ async def post_approve_exec(
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _after_exec_decision(
+        pipeline_id, approval_id, approved=True, record=out.get("record") or out,
+    )
+    return out
 
 
 @router.post("/{pipeline_id}/exec/{approval_id}/reject")
@@ -623,10 +751,18 @@ async def post_reject_exec(pipeline_id: str, approval_id: str, request: Request)
     from clipwright.supervisor.gateway import reject
 
     _enforce_pipeline_owner(request, pipeline_id)
+    dup = _exec_decision_duplicate(pipeline_id, approval_id)
+    if dup is not None:
+        return dup
+    _restore_store_pending(pipeline_id)
     try:
-        return reject(pipeline_id, approval_id)
+        out = reject(pipeline_id, approval_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    await _after_exec_decision(
+        pipeline_id, approval_id, approved=False, record=out.get("record") or out,
+    )
+    return out
 
 
 @router.get("/{pipeline_id}/exec/auto-mode")

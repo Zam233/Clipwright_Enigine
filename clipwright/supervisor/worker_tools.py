@@ -88,6 +88,85 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "glob_workspace": {
+        "type": "function",
+        "function": {
+            "name": "glob_workspace",
+            "description": "在工作区按 glob 模式查找文件（如 reports/**/*.md）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    "workspace_tree": {
+        "type": "function",
+        "function": {
+            "name": "workspace_tree",
+            "description": "列出工作区目录树（有界深度/条目）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "depth": {"type": "integer"},
+                    "pattern": {"type": "string"},
+                    "max_entries": {"type": "integer"},
+                },
+            },
+        },
+    },
+    "read_file_range": {
+        "type": "function",
+        "function": {
+            "name": "read_file_range",
+            "description": "分段读取工作区文本文件（offset/length 字节）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "length": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    "read_artifact": {
+        "type": "function",
+        "function": {
+            "name": "read_artifact",
+            "description": "读取工作区产物 JSON（artifact id 或 path；可 json_path 取子树）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact": {"type": "string"},
+                    "path": {"type": "string"},
+                    "json_path": {"type": "string"},
+                },
+            },
+        },
+    },
+    "grep_workspace": {
+        "type": "function",
+        "function": {
+            "name": "grep_workspace",
+            "description": "在工作区文本文件中按正则搜索，返回 path/line/text（只读）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "正则表达式"},
+                    "path": {"type": "string", "description": "相对工作区的子目录或文件"},
+                    "glob": {"type": "string", "description": "文件名过滤，如 *.md"},
+                    "ignore_case": {"type": "boolean"},
+                    "max_results": {"type": "integer"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
     "get_subagent_status": {
         "type": "function",
         "function": {
@@ -177,17 +256,30 @@ def _error(message: str) -> dict[str, Any]:
     return {"error": message}
 
 
-def _read_file(path: str, max_chars: int = 4000) -> dict[str, Any]:
+def _read_file(
+    path: str, max_chars: int = 4000, *, workspace_root: str = "", project_id: str = "",
+) -> dict[str, Any]:
     """读文件：**委托给注册表里的 read_file 工具**，保证白名单/体积语义只有一份。"""
-    return _delegate("read_file", {"path": path, "max_chars": max_chars})
+    return _delegate("read_file", {
+        "path": path, "max_chars": max_chars,
+        "workspace_root": workspace_root, "project_id": project_id,
+    })
 
 
-def _list_dir(path: str) -> dict[str, Any]:
-    return _delegate("list_dir", {"path": path})
+def _list_dir(path: str, *, workspace_root: str = "", project_id: str = "") -> dict[str, Any]:
+    return _delegate("list_dir", {
+        "path": path, "workspace_root": workspace_root, "project_id": project_id,
+    })
 
 
-def _write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
-    return _delegate("write_file", {"path": path, "content": content, "append": append})
+def _write_file(
+    path: str, content: str, append: bool = False, *,
+    workspace_root: str = "", project_id: str = "",
+) -> dict[str, Any]:
+    return _delegate("write_file", {
+        "path": path, "content": content, "append": append,
+        "workspace_root": workspace_root, "project_id": project_id,
+    })
 
 
 def _delegate(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -231,6 +323,8 @@ def build_executor(
     *,
     allowed: Iterable[str] = (),
     cwd: str = "",
+    workspace_root: str = "",
+    project_id: str = "",
     on_call: Optional[Callable[[str, bool, str], None]] = None,
 ) -> Callable[[str, dict[str, Any]], Any]:
     """为单个 worker 构造工具执行器（异步）。
@@ -250,8 +344,10 @@ def build_executor(
             pass
 
     async def executor(name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        result = await _dispatch(name, tool_input, allow=allow, pipeline_id=pipeline_id,
-                                 cwd=cwd, report=_report)
+        result = await _dispatch(
+            name, tool_input, allow=allow, pipeline_id=pipeline_id, cwd=cwd,
+            workspace_root=workspace_root, project_id=project_id, report=_report,
+        )
         return result
 
     return executor
@@ -264,11 +360,16 @@ async def _dispatch(
     allow: set[str],
     pipeline_id: str,
     cwd: str,
+    workspace_root: str,
+    project_id: str,
     report: Callable[[str, bool, str], None],
 ) -> dict[str, Any]:
     tool = str(name or "")
     args = tool_input if isinstance(tool_input, dict) else {}
-    out = await _dispatch_inner(tool, args, allow=allow, pipeline_id=pipeline_id, cwd=cwd)
+    out = await _dispatch_inner(
+        tool, args, allow=allow, pipeline_id=pipeline_id, cwd=cwd,
+        workspace_root=workspace_root, project_id=project_id,
+    )
     ok = "error" not in out
     report(tool, ok, str(out.get("error") or "")[:120])
     return out
@@ -281,6 +382,8 @@ async def _dispatch_inner(
     allow: set[str],
     pipeline_id: str,
     cwd: str,
+    workspace_root: str = "",
+    project_id: str = "",
 ) -> dict[str, Any]:
     if True:  # 保持缩进层级的占位（原 executor 主体）
         if tool not in SUPERVISOR_TOOLS:
@@ -292,14 +395,58 @@ async def _dispatch_inner(
             return _error("子代理不得再派生或取消子代理（星型拓扑，深度固定 1 层）")
 
         if tool == "read_file":
-            return _read_file(str(args.get("path", "")), int(args.get("max_chars") or 4000))
+            return _read_file(
+                str(args.get("path", "")), int(args.get("max_chars") or 4000),
+                workspace_root=workspace_root, project_id=project_id,
+            )
         if tool == "list_dir":
-            return _list_dir(str(args.get("path", "")))
+            return _list_dir(
+                str(args.get("path", "")),
+                workspace_root=workspace_root, project_id=project_id,
+            )
+        if tool == "read_artifact":
+            return _delegate("read_artifact", {
+                "artifact": str(args.get("artifact", "")),
+                "path": str(args.get("path", "")),
+                "json_path": str(args.get("json_path", "")),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
+        if tool == "glob_workspace":
+            return _delegate("glob_workspace", {
+                "pattern": str(args.get("pattern", "")),
+                "max_results": int(args.get("max_results") or 100),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
+        if tool == "workspace_tree":
+            return _delegate("workspace_tree", {
+                "depth": int(args.get("depth") or 2),
+                "pattern": str(args.get("pattern", "") or ""),
+                "max_entries": int(args.get("max_entries") or 200),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
+        if tool == "read_file_range":
+            return _delegate("read_file_range", {
+                "path": str(args.get("path", "")),
+                "offset": int(args.get("offset") or 0),
+                "length": int(args.get("length") or 4000),
+                "workspace_root": workspace_root, "project_id": project_id,
+            })
+        if tool == "grep_workspace":
+            return _delegate("grep_workspace", {
+                "pattern": str(args.get("pattern", "")),
+                "path": str(args.get("path", ".") or "."),
+                "glob": str(args.get("glob", "") or ""),
+                "ignore_case": bool(args.get("ignore_case", False)),
+                "max_results": int(args.get("max_results") or 50),
+                "workspace_root": workspace_root,
+                "project_id": project_id,
+            })
         if tool == "write_file":
             return _write_file(
                 str(args.get("path", "")),
                 str(args.get("content", "")),
                 bool(args.get("append", False)),
+                workspace_root=workspace_root, project_id=project_id,
             )
         if tool in ("web_search", "web_fetch"):
             # 联网工具：走注册表同一份实现（含未配置时的 DEPENDENCY_MISSING 语义）

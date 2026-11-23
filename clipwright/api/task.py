@@ -81,6 +81,11 @@ class AnswerBody(BaseModel):
     text: Optional[str] = Field(default=None, max_length=2000)
 
 
+class ReviewInterviewBody(BaseModel):
+    """只读复盘访谈：可选角色白名单。"""
+    roles: list[str] = Field(default_factory=list)
+
+
 class InjectBody(BaseModel):
     text: str = Field(description="人工注入的指令或修正")
 
@@ -205,6 +210,40 @@ async def get_task(task_id: str, request: Request) -> dict:
     return {"task": task.to_public(), "events": len(events(task_id))}
 
 
+@router.get("/{task_id}/review")
+async def review_task(task_id: str, request: Request) -> dict:
+    """终态任务只读复盘快照（不 resume、不派发、不写黑板）。"""
+    _enforce_task_owner(request, task_id)
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    from clipwright.services.agent_review import build_review
+
+    return build_review(task)
+
+
+@router.post("/{task_id}/review")
+async def review_task_post(task_id: str, request: Request) -> dict:
+    """PRD R10 的 POST 入口别名；与 GET 快照同义。"""
+    return await review_task(task_id, request)
+
+
+@router.post("/{task_id}/review/interview")
+async def interview_task(task_id: str, payload: ReviewInterviewBody,
+                         request: Request) -> dict:
+    """在只读复盘快照上按角色访谈；不 resume、不派发、不写任务。"""
+    _enforce_task_owner(request, task_id)
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    from clipwright.services.agent_interview import interview
+    from clipwright.services.agent_review import build_review
+
+    return await interview(
+        build_review(task), roles=(payload.roles or None),
+    )
+
+
 @router.get("/{task_id}/events")
 async def get_task_events(
     task_id: str,
@@ -301,6 +340,19 @@ async def stream_task_events(
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
+@router.get("/{task_id}/executions")
+async def get_task_executions(task_id: str, request: Request, limit: int = 100) -> dict:
+    """任务执行历史（exec_store）；前端执行记录页签的数据源。"""
+    _enforce_task_owner(request, task_id)
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    from clipwright.services import exec_store
+
+    items = exec_store.list_history(task, limit=max(1, min(500, int(limit or 100))))
+    return {"task_id": task_id, "count": len(items), "items": items}
+
+
 @router.post("/{task_id}/resume")
 async def resume_task(task_id: str, request: Request) -> dict:
     """继续一个暂停中的任务。
@@ -315,7 +367,7 @@ async def resume_task(task_id: str, request: Request) -> dict:
     task = kernel.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-    if task.terminal and task.status != "cancelled":
+    if task.terminal:
         raise HTTPException(
             status_code=409,
             detail={
@@ -324,35 +376,21 @@ async def resume_task(task_id: str, request: Request) -> dict:
                 "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
             },
         )
-    if task.status == "cancelled":
-        # 用户取消不是不可逆终态：保留黑板/已完成阶段，清掉终态标记后从
-        # 同一个 Task 的检查点继续，而不是新建任务从 structure 重跑。
-        task.status = "running"
-        task.finish = None
-        task.terminal_reason = None
-        task.blocker_code = ""
-        if hasattr(task, "touch"):
-            task.touch()
     if task.status == "waiting_user":
         from clipwright.services import ask_user
 
-        pend = ask_user.pending("task", task_id)
-        if pend:
+        pending = ask_user.pending("task", task_id)
+        if pending:
             raise HTTPException(
                 status_code=409,
-                detail={"reason": "waiting_answer",
-                        "question_id": pend[0]["question_id"],
-                        "message": "任务正在等待回答，请先回答上面的问题或取消任务"},
+                detail={
+                    "reason": "waiting_answer",
+                    "question_id": pending[0].get("question_id", ""),
+                    "message": "任务正在等待用户回答，不能 resume；请先回答或取消",
+                },
             )
-        # 服务重启后：旧协程已不在，问题已判 expired → 回落到 paused 再放行
+        # 重启后内存里没有待答问题 → 降级为 paused，允许继续
         task.status = "paused"
-        try:
-            from clipwright.services.task_events import emit
-
-            emit(task_id, "narration", "原问题已失效，任务继续",
-                 {"kind": "question_expired_on_restart"}, span="kernel")
-        except Exception:  # noqa: BLE001 — 事件不可用不影响续跑
-            pass
         if hasattr(task, "touch"):
             task.touch()
     _schedule(task_id)

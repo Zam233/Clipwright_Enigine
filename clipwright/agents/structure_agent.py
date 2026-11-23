@@ -1537,6 +1537,18 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     return result
             except json.JSONDecodeError:
                 pass
+        # 说明文字 + JSON 数组（或对象）混排：从每个可能的起始括号尝试
+        # raw_decode；JSONDecoder 自己会跳过字符串内括号，失败也只是一次本地解析。
+        for idx, ch in enumerate(content):
+            if ch not in "[{":
+                continue
+            try:
+                parsed, _ = decoder.raw_decode(content[idx:])
+            except json.JSONDecodeError:
+                continue
+            result = self._scenes_from_parsed(parsed)
+            if result:
+                return result
         return []
 
     def _parse_structured_result(self, result: dict, topic: str, tone: str) -> list[dict]:

@@ -164,6 +164,8 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/task/{task_id}/runs/{run_id}/message` | 给该阶段子会话排队补充要求（下次派发生效） |
 | `POST /api/task/{task_id}/runs/{run_id}/replay` | 真重跑；`refresh=true`，生成 `#r…` 新 `run_id`；终态任务 409 |
 | `GET /api/task/{task_id}/tool-calls?stage=&attempt=&limit=&offset=` | 读盘上的全量工具 transcript |
+| `GET /api/task/{task_id}/review` | **终态任务只读复盘**：任务/runs/事件统计/工具统计/黑板键/报告；不 resume、不派发、不写黑板 |
+| `POST /api/task/{task_id}/review/interview` | 在只读快照上按角色访谈（body `{roles?:[]}`）；只读、不调用工具、不写任务 |
 
 事件契约（前端按此渲染，不得只发分类字符串）：
 
@@ -533,6 +535,8 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/tool/list` | 列出所有 Tool |
 | `POST /api/tool/execute` | 执行 Tool |
 | `POST /api/tool/batch` | 批量执行 |
+| `GET /api/tool/jobs` | 通用 batch job 状态（有界、只读） |
+| `GET /api/tool/jobs/{job_id}` | 单个 batch job 状态 |
 | `POST /api/capability/{name}` | **通用能力网关**（插件对外 HTTP 入口的唯一通道）：按**能力名**解析（`capabilities.resolve_name`，能力名优先、工具名兜底）再执行，body `{params}`，返回 `ToolExecResult`。状态码语义：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径不合规、`503` 已解析但依赖缺失、`200` 成功；`costly`/`dangerous` 档记审计。**网关内没有任何具体 provider/能力名分支** |
 | `GET /api/skill/list` | 列出所有 Skill |
 | `POST /api/skill/execute` | 执行 Skill |
@@ -557,11 +561,21 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 
 | 工具 | 归属 | Provider | 关键参数 |
 |------|------|----------|----------|
-| `image_generate` | Engine 内置 | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
+| `image_generate` | `plugins/image_generate` | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
 | `timeline_insert_image` | Engine 内置 | — | task_id, asset_ref（工作区相对路径）, position（start/end/after:<clip_id>）, duration_sec, motion（ken_burns/still）；走补丁引擎，dry_run 可预览 |
+| `timeline_insert_images` | Engine 内置 | — | task_id, items[](asset_ref/position/duration_sec/motion)；批量插入，逐项返回 clip_id 与失败原因，dry_run 可预览 |
+| `read_image_batch` | Engine 内置 | 由 `vision_score` 能力决定（read_image 或插件接管） | assets[] + scene_context + frame_count + concurrency；批量视觉评分，单项失败隔离，带缓存 |
+| `video_trim_batch` | Engine 内置 | 由 `video_trim` 能力决定（内置 ffmpeg 或插件接管） | items[](asset/input_path/start_sec/duration_sec/track/position) + concurrency/idempotency_key；逐项 output_path/error/failures，带 trim 缓存 |
+| `apply_edl` | Engine 内置 | 依赖 `video_trim_batch` | 批量裁剪后按 track/position 落时间线；支持 dry_run |
+| `artifact_search` / `artifact_summary` | Engine 内置 | — | 按关键词搜索产物（不读全文）；读取类型/大小/sha256/顶层结构/预览 |
+| `generate_mg_batch` | Engine 内置 | `MGGenerator` | items[](description/text_content/type_id/duration_s/mg_def/persona_style/scene_context) + concurrency；逐项 mg_def/issues/preview_path/error |
+| `validate_animation_clip` / `preview_animation_clip` | Engine 内置 | Playwright | 颜色/关键帧/时长前置校验；preview 渲染 HTML 并抽帧拼网格 PNG（`grid_path`），可选 `inspect=true` 做 vision 质检 |
+| `candidate_query` / `candidate_rerank` / `material_dedupe` | Engine 内置 | — | 候选素材查询/确定性粗排/去重 |
+| `scene_budget_check` / `script_scene_diff` | Engine 内置 | — | 分镜总时长/场景数/密度对账；改稿增删改差异 |
+| `timeline_probe` / `audio_timeline_probe` / `mix_report` | Engine 内置 | — | 时间线素材落点；旁白/字幕/BGM 落点；音量/重叠/间隙报告 |
+| `quality_report` | Engine 内置 | — | 读最近一次 quality 阶段报告；没有报告时返回 not_found，提示先派 quality |
 
-`image_generate` 只在存在可用图像源时出现在主 Agent 工具面；生成后自动注册该工作区的
-图片素材源，素材阶段可按 prompt 关键词检索到。
+`image_generate` / `image_generate_batch` 由 `image_generate` 插件提供；未安装插件或没有图像源时**不出现在工具面**，Engine 不保留空壳工具。生成后自动注册该工作区的图片素材源，但**不会自动进入时间线**，需要 `timeline_insert_image` / `timeline_insert_images`。
 
 环境变量/插件配置：
 
@@ -942,7 +956,7 @@ secret 字段（密钥类）读取时只返回 `has_value` 与掩码占位、绝
 | `bpm_detect` | BPM 检测 | ffmpeg |
 | `scene_detect` | 场景检测 | ffmpeg |
 | `semantic_match` | 语义匹配 | - |
-| `vision_llm` | 视觉 LLM 接口 | - |
+| `read_image` | 视觉 LLM 接口 | - |
 | `face_detect` | 人脸检测 | ffmpeg |
 | `background_remove` | 背景去除/替换 | ffmpeg |
 | `effect_vignette` | 电影效果 | ffmpeg |

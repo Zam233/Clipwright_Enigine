@@ -71,7 +71,7 @@ class TestContextSectionForbidsBackground:
 class TestEnsureNoBackground:
     def test_generate_strips_bg_without_vision(self) -> None:
         mg_def = _mg_def_with_bg()
-        result = MGGenerator._ensure_no_background(copy.deepcopy(mg_def), "")
+        result = MGGenerator()._ensure_no_background(copy.deepcopy(mg_def), "")
         bg = next(e for e in result["elements"] if e["type"] == "bg")
         assert bg["background"] == "transparent"
         # 非 bg 元素不受影响
@@ -81,14 +81,14 @@ class TestEnsureNoBackground:
     def test_generate_strips_bg_with_blank_vision(self) -> None:
         """空白 vision_prompt（仅空格）视同未要求背景。"""
         mg_def = _mg_def_with_bg()
-        result = MGGenerator._ensure_no_background(copy.deepcopy(mg_def), "   ")
+        result = MGGenerator()._ensure_no_background(copy.deepcopy(mg_def), "   ")
         bg = next(e for e in result["elements"] if e["type"] == "bg")
         assert bg["background"] == "transparent"
 
     def test_generate_keeps_bg_with_vision(self) -> None:
         mg_def = _mg_def_with_bg()
         original_bg = mg_def["elements"][0]["background"]
-        result = MGGenerator._ensure_no_background(
+        result = MGGenerator()._ensure_no_background(
             copy.deepcopy(mg_def), "背景用深蓝色"
         )
         bg = next(e for e in result["elements"] if e["type"] == "bg")

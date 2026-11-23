@@ -7,7 +7,7 @@ Provider 插件把“厂商差异”关在插件里：核心只持有协议，�
 plugins/llm_openai_compatible/   plugins/llm_anthropic/
 plugins/tts_qwen/                plugins/tts_minimax/       plugins/tts_cosyvoice/
 plugins/stt_providers/           plugins/whisper_stt/
-plugins/image_providers/         plugins/image_gpt_images/
+plugins/image_generate/         plugins/image_gpt_images/
 plugins/embedding_providers/     plugins/rerank_providers/
 plugins/text_motion_core/        plugins/text_motion_llm/
 ```
@@ -19,14 +19,19 @@ plugins/text_motion_core/        plugins/text_motion_llm/
 | `llm_provider` | `LLMProvider` | `capabilities(model)`、`build_client(...)`、`default_model()` |
 | `tts_provider` | `TTSProvider` | `clone(...)`、`synthesize(...)`、`default_model()` |
 | `stt_provider` | `STTProvider` | `transcribe`、`align`、`is_available` |
-| `image_provider` | 图像生成 | `default_model()`、`capabilities`、`generate(...)`（可选 `probe`） |
+| `image_provider` | 图像生成 | `default_model()`、`capabilities`、`generate(...)`（可选 `probe` / `generate_batch(...)`） |
 | `embedding_provider` | `EmbeddingProvider` | `create_embedder(...)`、`default_model()` |
 | `rerank_provider` | `RerankProvider` | `create_reranker(...)`、`default_model()` |
 | `renderer_backend` | `RendererBackend` | `capabilities()`、`probe()`、`render(...)` |
 | `text_motion` | `TextMotionProvider` | 见 `clipwright/animation/text_motion/` |
 
+图像 provider 可实现可选的 `BatchImageProvider.generate_batch(requests)`：返回值必须与
+requests 等长同序；`capabilities.supports_batch=True` 表示声明支持。未实现的 provider
+仍由宿主逐项调用 `generate`（回退路径）。
+
 Provider **只做传输与格式转换**；不要在插件里写全局重试、JSON 修复、工具循环，这些在核心
 （`services/llm.py`、`services/voice.py`）里，重复实现会与核心策略打架。
+
 
 ## 2. LLM 能力协商
 
