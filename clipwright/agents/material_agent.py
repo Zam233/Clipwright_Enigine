@@ -849,22 +849,39 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
             candidate_clips = []
 
+            # ── 断点续跑：复用已有候选，只处理没有候选/上次占位的场景 ──
+            _resume = input_data.resume_checkpoint or {}
+            _reuse: dict[int, dict[str, Any]] = {}
+            for _clip in (_resume.get("partial_outputs") or []):
+                if not isinstance(_clip, dict):
+                    continue
+                try:
+                    _idx = int(_clip.get("scene_index"))
+                except (TypeError, ValueError):
+                    continue
+                if _clip.get("suggested_assets"):
+                    _reuse[_idx] = _clip
+            _pending_indices = [i for i in range(len(scenes)) if i not in _reuse]
+            _pending_scenes = [scenes[i] for i in _pending_indices]
+
             # ── 并行处理场景 ──
             # 每场景的 LLM 搜索词 + 搜索 + 校验相互独立 → 场景级有界并行（默认 4）
             scene_concurrency = max(1, int(getattr(settings, "material_concurrency", 4)))
 
-            # 尝试一次 LLM 调用为全部场景生成搜索词（省 N-1 次往返）；失败回退逐场景
+            # 尝试一次 LLM 调用为全部待处理场景生成搜索词（省 N-1 次往返）；失败回退逐场景
             batch_queries = await _llm_search_queries_batch(
-                scenes,
+                _pending_scenes,
                 pipeline_id=context.pipeline_id,
                 persona_style=" ".join(persona_style_keywords),
                 brief_hint=brief_material_hint,
                 category_hint=_category_search_hint(context.category_plugin_id),
-            )
+            ) if _pending_scenes else []
 
             sem = asyncio.Semaphore(scene_concurrency)
 
-            async def _process_scene(i: int, scene: dict[str, Any]) -> dict[str, Any]:
+            async def _process_scene(
+                i: int, scene: dict[str, Any], *, _batch_query: list[str] | None = None,
+            ) -> dict[str, Any]:
                 async with sem:
                     return await self._process_scene(
                         i, scene,
@@ -876,11 +893,17 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                         vision_frame_count=vision_frame_count,
                         input_data=input_data,
                         pipeline_id=context.pipeline_id,
-                        batch_query=batch_queries[i] if batch_queries else None,
+                        batch_query=_batch_query,
                     )
 
             results = await asyncio.gather(
-                *(_process_scene(i, s) for i, s in enumerate(scenes)),
+                *(
+                    _process_scene(
+                        i, scenes[i],
+                        _batch_query=(batch_queries[pos] if batch_queries else None),
+                    )
+                    for pos, i in enumerate(_pending_indices)
+                ),
                 return_exceptions=True,
             )
             # 进度可见（现代 agent 化）：材料阶段是最长的一段（43 场逐场检索 + 视觉 LLM），
@@ -910,9 +933,16 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 elif r is not None:
                     candidate_clips.append(r)
 
+            # 复用上次已完成场景的候选；只把本轮待处理场景的结果补进来。
+            for _idx, _clip in _reuse.items():
+                candidate_clips.append(_clip)
+            candidate_clips.sort(key=lambda r: int(r.get("scene_index", 0) or 0))
+
             notes: list[str] = []
             if use_vision_llm:
                 notes.append(f"视觉LLM分析已启用 (每候选 {vision_frame_count} 帧)")
+            if _reuse:
+                notes.append(f"断点续跑：复用 {len(_reuse)} 场已完成候选，仅重试 {len(_pending_indices)} 场")
 
             # ── 候选素材**真下载**到工作区（material → edit 的缺口，2026-10-31 用户实测）──
             #
@@ -997,6 +1027,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     "MaterialAgent: %d/%d 个场景无匹配素材 → 文字/纯色占位（已登记降级）",
                     len(placeholders), len(candidate_clips),
                 )
+                self._save_checkpoint(input_data, context, candidate_clips)
                 return MaterialOutput(
                     decision=AgentDecision.PASS,
                     degradations=placeholder_degradations,
@@ -1016,6 +1047,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     "scope": "stage:material",
                     "impact": "候选只有远程 URL、没有本地文件，edit 无法裁剪真实素材",
                 })
+            self._save_checkpoint(input_data, context, candidate_clips)
             return MaterialOutput(
                 decision=AgentDecision.PASS,
                 degradations=download_degradations,
@@ -1026,6 +1058,43 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         except Exception as e:
             logger.exception("MaterialAgent 失败: %s", e)
             return self.build_error_output(str(e), MaterialOutput)
+
+    def _save_checkpoint(
+        self, input_data: MaterialInput, context: AgentContext,
+        candidate_clips: list[dict[str, Any]],
+    ) -> None:
+        """保存 material 断点；只记录有候选的场景，占位场景留给下次重试。"""
+        try:
+            root = str((getattr(context, "extra_params", None) or {}).get("workspace_root") or "")
+            if not root:
+                return
+            from clipwright.services import checkpoints as _ckpt
+            from clipwright.schema.checkpoint import StageCheckpoint
+
+            partial = [c for c in candidate_clips if c.get("suggested_assets")]
+            completed = sorted({
+                int(c.get("scene_index")) for c in partial
+                if c.get("scene_index") is not None
+            })
+            failures = [
+                {"scene_index": int(c.get("scene_index")),
+                 "reason": str(c.get("note") or "no_candidate")[:200]}
+                for c in candidate_clips
+                if not c.get("suggested_assets") and c.get("scene_index") is not None
+            ]
+            _ckpt.save(root, StageCheckpoint(
+                stage="material",
+                task_id=str(getattr(context, "pipeline_id", "") or ""),
+                input_digest=(
+                    (input_data.resume_checkpoint or {}).get("input_digest")
+                    if isinstance(input_data.resume_checkpoint, dict) else ""
+                ) or "",
+                completed_units=completed,
+                partial_outputs=partial,
+                failures=failures,
+            ))
+        except Exception as exc:  # noqa: BLE001 — 检查点失败不阻断出片
+            logger.warning("MaterialAgent: 保存断点失败（继续）: %s", exc)
 
     async def _download_candidates(
         self, candidate_clips: list[dict[str, Any]], context: AgentContext,

@@ -583,6 +583,27 @@ async def run_stage(task: Any, spec: StageSpec) -> AgentResult:
             # CAS 基线必须在所有“执行前写入”（如 reset_timeline）之后取：
             # 否则阶段自己的回退会被当成并发冲突。
             board_revision = bb.revision(task_id)
+            # 断点续跑：material 的输入摘要只取结构产物（不带输出键），
+            # 这样第二次重派（黑板已多出 candidate_clips）仍能命中同一检查点。
+            if stage == "material" and isinstance(input_obj, dict) is False:
+                try:
+                    from clipwright.services import checkpoints as _ckpt
+
+                    _root = str(_workspace_root_of(task) or "")
+                    if _root:
+                        _digest = _ckpt.digest({
+                            "stage": stage,
+                            "script_skeleton": board.get("script_skeleton"),
+                            "scenes": board.get("scenes"),
+                        })
+                        _cp = _ckpt.load(_root, stage, _digest)
+                        if hasattr(input_obj, "resume_checkpoint"):
+                            input_obj.resume_checkpoint = (
+                                _cp.model_dump(mode="json") if _cp is not None
+                                else {"input_digest": _digest, "partial_outputs": []}
+                            )
+                except Exception as exc:  # noqa: BLE001 — 检查点坏了按全新跑
+                    logger.warning("阶段 %s 读取检查点失败（按全新跑）: %s", stage, exc)
             output = await wait_or_run(agent.execute(input_obj, context), timeout_eff)
         payload = stage_merge.payload_of(output)
         if degradations and hasattr(output, "degradations"):
@@ -1019,12 +1040,16 @@ def _internal_failure(exc: Exception) -> Any:
     from clipwright.schema.agent import FailureReport
 
     name = type(exc).__name__.lower()
-    category = "timeout" if "timeout" in name else (
-        "model_incapable" if "llm" in name or "parse" in name else "internal_defect")
+    category = str(getattr(exc, "category", "") or "")
+    if not category:
+        category = "timeout" if "timeout" in name else (
+            "model_incapable" if "llm" in name or "parse" in name else "internal_defect")
     return FailureReport(
         category=category,
         blocking_point=f"{type(exc).__name__}: {exc}"[:200],
-        retryable="retry_same" if category != "internal_defect" else "needs_human",
+        retryable=("retry_same" if category in ("timeout", "model_incapable", "provider_error")
+                   else "needs_human"),
+        evidence=[{"kind": "provider_error", "text": str(exc)[:200]}] if category == "provider_error" else [],
     )
 
 

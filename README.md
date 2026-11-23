@@ -13,14 +13,7 @@ One main agent dispatching stage subagents, capability-resolved tools, and a plu
 <br/>
 
 ![Version](https://img.shields.io/badge/version-0.1.0-4F6BED)
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
-![MongoDB](https://img.shields.io/badge/MongoDB-metadata-47A248?logo=mongodb&logoColor=white)
-![Subagents](https://img.shields.io/badge/subagents-7-4F6BED)
-![Plugins](https://img.shields.io/badge/plugins-42-8B5CF6)
-![Tests](https://img.shields.io/badge/tests-5101_passed-2EA043)
 ![License](https://img.shields.io/badge/license-MPL--2.0-8B5CF6)
-![PRs Welcome](https://img.shields.io/badge/PRs-welcome-2EA043)
 
 </div>
 
@@ -30,9 +23,12 @@ One main agent dispatching stage subagents, capability-resolved tools, and a plu
 **one main agent** plans the work and dispatches **stage subagents** to turn a topic into a rendered video — and
 keeps a receipt for every step.
 
-The loop is deliberately human-in-the-loop: the engine drafts, the web editor lets you review the timeline, and
-a revised instruction continues the same task. Every round is a real `Task` with goals, limits, events and
-degradation receipts — not a hidden prompt chain.
+The loop is deliberately human-in-the-loop:
+
+> Agent drafts → you review on the timeline → a revised instruction continues the same task → render when it feels right.
+
+This is not a hidden prompt chain. Every round is a real `Task` with goals, limits, events and degradation
+receipts; every stage result is an `AgentResult` with run/attempt identity, handoff summary and evidence.
 
 The engine knows *how* to run agents, tools and plugins; **what** those plugins are and how they behave belongs
 to the plugins themselves.
@@ -46,26 +42,27 @@ to the plugins themselves.
 ## Key Features
 
 - **One main agent, stage subagents** — a single main agent owns the plan and calls
-  `delegate_agent(stage=…)` to dispatch structure → material → edit → animation → audio → quality as stage
-  subagents. Each stage has structured inputs/outputs, its own run record and writes back to a shared blackboard;
-  failures return to the main agent, which decides whether to redo, skip or accept. The retired six-stage
-  pipeline is no longer an execution path — goals, soft-landing/closeout, the `capped` terminal state,
-  pause/resume and deterministic continuation live in the task kernel.
-- **Capability-resolved tools** — 44+ atomic tools and 4 skills are resolved by semantic capability names at call
-  time, so plugins can take over without touching agent code. Tools self-declare permission tiers; missing
-  capability is a first-class state, not an exception.
+  `delegate_agent(stage=…)` to dispatch structure → material → edit → animation → audio → quality. Each stage
+  has structured inputs/outputs, its own run record and writes back to a shared blackboard; failures return to
+  the main agent, which decides whether to redo, skip or accept. The retired six-stage pipeline is no longer an
+  execution path — goals, soft-landing/closeout, the `capped` terminal state, pause/resume, continuation and
+  deterministic recovery live in the task kernel.
+- **Capability-resolved tools** — atomic tools and skills are resolved by semantic capability names at call time,
+  so plugins can take over without touching agent code. Tools self-declare permission tiers; a missing capability
+  is a first-class state, not an exception.
 - **Pluggable plugin surface** — tools, skills, hooks, prompts, UI slots, export presets, display specs and
-  provider families (LLM, TTS, embedding, rerank, STT) are all plugin contributions (42 built-in plugins).
-  Providers are plugin-owned: the engine only exposes protocols, registries and capability bits (tool result
-  style, vision format, model listing, audio refs) instead of vendor-name branches. Disable a plugin and its
-  capability disappears — no hidden built-in back-fill.
+  provider families (LLM, TTS, embedding, rerank, STT) are all plugin contributions. Providers are plugin-owned:
+  the engine exposes protocols, registries and capability bits (tool result style, vision format, model listing,
+  audio refs) instead of vendor-name branches. Disable a plugin and its capability disappears — no hidden
+  built-in back-fill.
 - **Workspace & media pipeline** — per-task workspaces, `materials/` as the only writable area, FFmpeg rendering,
   subtitle burn-in, motion-graphics/hyperframes, render queues with priorities and resumable artifacts.
-- **Realtime by SSE** — 31 event types (task, agent-run, tool, subagent, degradation, closeout, progress…) share
-  one sequence model; reconnecting resumes from `since_seq`.
-- **Evidence over claims** — degradation receipts, closeout reports, run/attempt addressing and golden replay make
-  every delivered video reproducible and every failure explainable.
-- **Tested where it hurts** — 5.1k pytest tests, strict prompt lint, and a ruff error gate in CI.
+- **Realtime by SSE** — task events, agent runs, tool calls, subagent rounds, degradations, closeout and progress
+  share one sequencing model; reconnecting resumes from `since_seq`.
+- **Evidence over claims** — degradation receipts, closeout reports, run/attempt addressing and golden
+  replay make every delivered video reproducible and every failure explainable.
+- **Tested where it hurts** — pytest coverage for kernels, stages and contracts, strict prompt lint, and a ruff
+  error gate in CI.
 
 ## Quick Start
 
@@ -122,8 +119,9 @@ npm run dev
 
 Open <http://localhost:5173>. The Vite dev server proxies `/api` to the engine (`:8080`).
 
-> 2026-11-08：账号/市场服务（ClipWright Server，`:8090`）已从本仓库与前端剥离——没有账号、登录、
-> CREADIT 与市场；需要鉴权时只在「设置 → 后端配置」配置本地 API 令牌。
+> 2026-11-08: the account/market service (`ClipWright Server`, `:8090`) has been removed from this repository
+> and the editor — no accounts, login, CREADIT or marketplace. For local authentication, set the API token in
+> **Settings → Backend connection**.
 
 ## Tech Stack
 
@@ -131,13 +129,13 @@ Open <http://localhost:5173>. The Vite dev server proxies `/api` to the engine (
 | --- | --- |
 | Runtime | Python 3.12 + FastAPI (pinned `>=0.115,<0.162`) |
 | Data | Pydantic v2 + MongoDB (pymongo) |
-| Agents | In-house task kernel: one main agent + stage subagents |
+| Agents | In-house task kernel: one main agent + stage subagents, `AgentResult` v2 |
 | Tools | `ToolRegistry` + capability resolution + per-tool permission tiers |
 | Plugins | Unified contribution contract, signed manifests, enable/disable rollback |
 | Media | FFmpeg (render, trim, subtitle burn-in), motion graphics / hyperframes |
 | Retrieval | ChromaDB + plugin-provided embedding/rerank providers |
 | Realtime | SSE (task events / session timeline / render progress / agent stream) |
-| Testing | pytest (5.1k), prompt lint (strict), ruff error gate |
+| Testing | pytest, prompt lint (strict), ruff error gate |
 
 ## License
 

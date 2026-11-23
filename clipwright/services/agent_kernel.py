@@ -1383,11 +1383,13 @@ class AgentKernel:
             # 注意：`RecordingMiss` 这类"回放缺数据"必须原样出现在原因里，
             # 否则会退化成"任务莫名结束"（A2 的红线）。
             logger.warning("tool loop 驱动器异常 %s: %s", task.id, exc)
+            _cat = str(getattr(exc, "category", "") or "internal_defect")
             outcome = {
                 "status": "error",
                 "error": f"{type(exc).__name__}: {exc}",
                 "stopped_reason": type(exc).__name__,
-                "failure": {"category": "internal_defect", "retryable": "needs_human",
+                "failure": {"category": _cat,
+                            "retryable": "retry_same" if _cat == "provider_error" else "needs_human",
                             "blocking_point": f"{type(exc).__name__}: {exc}"[:200],
                             "evidence": []},
             }

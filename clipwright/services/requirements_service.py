@@ -3230,12 +3230,18 @@ class RequirementsService:
     # `user_instruction` / `conversation` / `prev_run` 三段）。
 
     def _released_before(self, session: dict) -> bool:
-        """会话是否已经跑过并释放过任务（`_release_session_after_task` 写的标记）。"""
-        for msg in reversed(list((session.get("messages") or []))[-10:]):
+        """会话是否已经跑过并释放过任务。
+
+        历史数据只有 `user_stopped`（stop_task 的旧写法），新数据同时写
+        `task_released`；两者都算释放。不能只扫最后 10 条——用户连续说几次
+        “继续”就会把标记挤出窗口。"""
+        for msg in reversed(list(session.get("messages") or [])):
             if not isinstance(msg, dict):
                 continue
             meta = msg.get("metadata") or {}
-            if isinstance(meta, dict) and meta.get("task_released"):
+            if isinstance(meta, dict) and (
+                meta.get("task_released") or meta.get("user_stopped")
+            ):
                 return True
         return False
 
@@ -3373,11 +3379,32 @@ class RequirementsService:
                         prev_closeout = str(getattr(_co, "deliverable_status", "") or "") or "unknown"
             except Exception as exc:  # noqa: BLE001 — 取不到就退化成不携带
                 logger.warning("续跑：读取上一轮终态失败 %s: %s", prev_task_id, exc)
+        completed_stages: list[str] = []
+        if prev_task_id:
+            try:
+                from clipwright.services import run_store as _run_store
+                completed_stages = sorted({
+                    str(getattr(r, "stage", "") or "")
+                    for r in _run_store.list_task(prev_task_id)
+                    if str(getattr(r, "kind", "")) == "stage"
+                    and str(getattr(r, "status", "")) in ("ok", "degraded")
+                    and str(getattr(r, "stage", "") or "")
+                })
+            except Exception as exc:  # noqa: BLE001 — 读不到就当没有
+                logger.warning("续跑：读取已完成阶段失败 %s: %s", prev_task_id, exc)
         extra: dict[str, Any] = {
             "session_id": session_id,
             "production_plan": plan,
             "creative_brief": brief,
             "docs": docs,
+            # 断点续跑：新 task 的上下文带上前一 task 的身份；黑板由
+            # seed_blackboard 继承，completed_stages 让主 agent 不再从零重排。
+            "resume": {
+                "from_task_id": prev_task_id,
+                "released_reason": "user_cancelled" if prev_task_id else "",
+                "completed_stages": completed_stages,
+                "blackboard_keys": [],
+            },
             # ★ 本轮用户指令 + 上一轮任务 id：context_loader 用它们拼
             #   `## 本轮用户指令` 与 `## 上一轮执行轨迹`，让新任务"接得上"。
             "user_instruction": instruction,
@@ -3517,7 +3544,8 @@ class RequirementsService:
             messages.append({
                 "role": "assistant", "content": note,
                 "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                "metadata": {"user_stopped": True, "task_id": live,
+                "metadata": {"user_stopped": True, "task_released": "cancelled",
+                             "task_id": live,
                              "task_status": task_status or "cancelled",
                              "terminal_reason": terminal_reason or "user_cancelled",
                              "goal_status": goal_status},
